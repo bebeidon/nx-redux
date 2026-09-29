@@ -11,7 +11,7 @@
 #include "content.h"
 #include "shortcuts.h"
 #include "config.h"
-#include "arcade_names.h"
+#include "../common/arcade_names.h"
 
 static bool _simple_mode = false;
 
@@ -107,7 +107,7 @@ static struct {
 } arcade_tables[ARCADE_TABLES_MAX];
 static int arcade_table_count = 0;
 
-static const char* arcadeName(const char* rom_path) {
+static ArcadeNames* arcadeTable(const char* rom_path) {
 	// ROMS_PATH is a runtime value on desktop, so no literal "/" concatenation
 	if (!prefixMatch(ROMS_PATH, rom_path) || rom_path[strlen(ROMS_PATH)] != '/')
 		return NULL;
@@ -132,7 +132,66 @@ static const char* arcadeName(const char* rom_path) {
 		arcade_tables[arcade_table_count].names = names;
 		arcade_table_count++;
 	}
-	return ArcadeNames_get(names, baseName(rom_path));
+	return names;
+}
+
+static const char* arcadeName(const char* rom_path) {
+	return ArcadeNames_get(arcadeTable(rom_path), baseName(rom_path));
+}
+
+// True when an entry's display name is its arcade table title, setting
+// *qualifier to the table qualifier (e.g. "(Japan 940520)", NULL if none).
+// False when map.txt names it or the name is not the table's (a Rename
+// recorded in Recents, a non-arcade file).
+static bool arcadeQualifier(Hash* map, const Entry* entry, const char** qualifier) {
+	if (entry->type != ENTRY_ROM)
+		return false;
+	const char* filename = baseName(entry->path);
+	if (map && Hash_get(map, filename))
+		return false;
+	ArcadeNames* names = arcadeTable(entry->path);
+	const char* title = ArcadeNames_get(names, filename);
+	if (!title || !exactMatch(title, entry->name))
+		return false;
+	*qualifier = ArcadeNames_getQualifier(names, filename);
+	return true;
+}
+
+// Label each row of a same-folder run of arcade clones sharing one title by
+// region or DAT qualifier: "Alien vs. Predator (Japan)" rather than "avspj";
+// a lone unqualified parent set keeps the bare title, and clones the
+// qualifiers cannot tell apart get "<title> (<stem>)". Returns false, touching
+// nothing, when any row is not table-named.
+static bool arcadeLabelRun(Directory* self, Hash* map, int start, int end) {
+	int n = end - start;
+	const char** qualifiers = calloc(n, sizeof(char*));
+	const char** filenames = calloc(n, sizeof(char*));
+	char** labels = calloc(n, sizeof(char*));
+	char* bufs = calloc(n, MAX_PATH);
+	bool ok = qualifiers && filenames && labels && bufs;
+	for (int k = 0; ok && k < n; k++) {
+		Entry* e = self->entries->items[start + k];
+		labels[k] = bufs + k * MAX_PATH;
+		filenames[k] = baseName(e->path);
+		ok = arcadeQualifier(map, e, &qualifiers[k]);
+	}
+	if (ok)
+		ok = ArcadeNames_disambiguate(qualifiers, filenames, n, labels, MAX_PATH);
+	for (int k = 0; ok && k < n; k++) {
+		Entry* e = self->entries->items[start + k];
+		char buf[MAX_PATH];
+		if (labels[k][0])
+			snprintf(buf, sizeof(buf), "%s %s", e->name, labels[k]);
+		else
+			snprintf(buf, sizeof(buf), "%s", e->name); // the unqualified parent set
+		free(e->unique);
+		e->unique = strdup(buf);
+	}
+	free(bufs);
+	free(labels);
+	free(filenames);
+	free(qualifiers);
+	return ok;
 }
 
 static void Directory_index(Directory* self) {
@@ -198,6 +257,9 @@ static void Directory_index(Directory* self) {
 		//   same file across the run  -> "<name> (<tag>)"     (per-core copies of one rom)
 		//   files differ, tags differ -> "<stem> (<tag>)"     (different roms from different cores; the core tag tells them apart)
 		//   files differ, same tag    -> "<stem>"             (same folder, e.g. "Tetris" vs "Tetris (1)")
+		// except that arcade clones named by the same table title get
+		// "<name> (<region>)" or "<name> <qualifier>", the bare "<name>" for
+		// a lone unqualified parent set, else "<name> (<stem>)" (arcadeLabelRun).
 		// The tag is appended only when filenames differ across cores because
 		// without it the user cannot tell which core a row would launch. The stem
 		// drops the extension, except when two stems in the run would collide
@@ -245,7 +307,8 @@ static void Directory_index(Directory* self) {
 				}
 			}
 
-			for (int k = i; k < j; k++) {
+			bool arcade_labelled = !same_file && !tags_differ && arcadeLabelRun(self, map, i, j);
+			for (int k = i; k < j && !arcade_labelled; k++) {
 				Entry* e = self->entries->items[k];
 				free(e->unique);
 				e->unique = NULL;
