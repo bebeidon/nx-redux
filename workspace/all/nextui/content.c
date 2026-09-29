@@ -544,7 +544,7 @@ int isConsoleDir(char* path) {
 
 // Bump this whenever the index-building logic changes, so existing caches are
 // rebuilt once after an upgrade without users clearing them.
-#define CACHE_SCHEMA_TAG "romindex-v4"
+#define CACHE_SCHEMA_TAG "romindex-v5"
 static uint64_t fnv1a64(const char* str) {
 	uint64_t h = 0xCBF29CE484222325ULL;
 	for (; *str; str++)
@@ -775,6 +775,59 @@ Array* Content_searchRoms(const char* query) {
 	return results;
 }
 
+// A search-index row named from an arcade table, kept until the folder scan
+// ends so clones sharing a title can be labelled like the game list does.
+typedef struct {
+	const char* title;	   // table-owned
+	const char* qualifier; // table-owned, may be NULL
+	Entry* entry;
+} ArcadeIndexRow;
+
+static int compareArcadeIndexRow(const void* a, const void* b) {
+	return strcmp(((const ArcadeIndexRow*)a)->title, ((const ArcadeIndexRow*)b)->title);
+}
+
+// Rename each run of rows sharing an arcade title to
+// "<title> <label> (<tag>)" (ArcadeNames_disambiguate), matching the labels
+// Directory_index gives the same rows in the folder view.
+static void labelArcadeIndexRows(ArcadeIndexRow* rows, int count, const char* tag) {
+	qsort(rows, count, sizeof(ArcadeIndexRow), compareArcadeIndexRow);
+	for (int i = 0; i < count;) {
+		int j = i + 1;
+		while (j < count && exactMatch(rows[i].title, rows[j].title))
+			j++;
+		int n = j - i;
+		if (n > 1) {
+			const char** qualifiers = calloc(n, sizeof(char*));
+			const char** filenames = calloc(n, sizeof(char*));
+			char** labels = calloc(n, sizeof(char*));
+			char* bufs = calloc(n, MAX_PATH);
+			bool ok = qualifiers && filenames && labels && bufs;
+			for (int k = 0; ok && k < n; k++) {
+				qualifiers[k] = rows[i + k].qualifier;
+				filenames[k] = baseName(rows[i + k].entry->path);
+				labels[k] = bufs + k * MAX_PATH;
+			}
+			if (ok && ArcadeNames_disambiguate(qualifiers, filenames, n, labels, MAX_PATH)) {
+				for (int k = 0; k < n; k++) {
+					if (!labels[k][0])
+						continue; // the unqualified parent set keeps "<title> (<tag>)"
+					Entry* e = rows[i + k].entry;
+					char name[MAX_PATH];
+					snprintf(name, sizeof(name), "%s %s (%s)", rows[i + k].title, labels[k], tag);
+					free(e->name);
+					e->name = strdup(name);
+				}
+			}
+			free(bufs);
+			free(labels);
+			free(filenames);
+			free(qualifiers);
+		}
+		i = j;
+	}
+}
+
 // Scan one console folder and push one search-index Entry per rom, each named
 // "<rom label> (<TAG>)". The TAG is the folder's parenthesised emulator tag
 // (getEmuName), or the folder name itself when it has none; it is used instead
@@ -803,6 +856,10 @@ static void indexRomDir(Array* rom_index, const char* dir_path) {
 	snprintf(map_path, sizeof(map_path), "%s/map.txt", dir_path);
 	Hash* rom_map = readMapFile(map_path);
 
+	ArcadeIndexRow* arcade_rows = NULL;
+	int arcade_count = 0;
+	int arcade_cap = 0;
+
 	struct dirent* rom_dp;
 	char rom_path[MAX_PATH];
 	while ((rom_dp = readdir(rom_dh)) != NULL) {
@@ -814,8 +871,11 @@ static void indexRomDir(Array* rom_index, const char* dir_path) {
 		// Directory_index keys aliases by the entry's last path component,
 		// which for a folder game is the directory name — so this matches.
 		const char* alias = rom_map ? Hash_get(rom_map, rom_dp->d_name) : NULL;
-		if (!alias)
+		bool from_arcade = false;
+		if (!alias) {
 			alias = arcadeName(rom_path); // same fallback as Directory_index
+			from_arcade = alias != NULL;
+		}
 		if (alias && hide((char*)alias))
 			continue; // folder view filters hidden aliases; search must too
 
@@ -840,9 +900,28 @@ static void indexRomDir(Array* rom_index, const char* dir_path) {
 		char full_display[MAX_PATH];
 		snprintf(full_display, sizeof(full_display), "%s (%s)", rom_label, tag);
 
-		Array_push(rom_index, Entry_newNamed(rom_path, ENTRY_ROM, full_display));
+		Entry* entry = Entry_newNamed(rom_path, ENTRY_ROM, full_display);
+		Array_push(rom_index, entry);
+
+		if (from_arcade) {
+			if (arcade_count == arcade_cap) {
+				int cap = arcade_cap ? arcade_cap * 2 : 64;
+				ArcadeIndexRow* grown = realloc(arcade_rows, cap * sizeof(ArcadeIndexRow));
+				if (!grown)
+					continue; // out of memory: this row just keeps its plain title
+				arcade_rows = grown;
+				arcade_cap = cap;
+			}
+			arcade_rows[arcade_count].title = alias;
+			arcade_rows[arcade_count].qualifier = ArcadeNames_getQualifier(arcadeTable(rom_path), rom_dp->d_name);
+			arcade_rows[arcade_count].entry = entry;
+			arcade_count++;
+		}
 	}
 	closedir(rom_dh);
+	if (arcade_count > 1)
+		labelArcadeIndexRows(arcade_rows, arcade_count, tag);
+	free(arcade_rows);
 	if (rom_map)
 		Hash_free(rom_map);
 }
