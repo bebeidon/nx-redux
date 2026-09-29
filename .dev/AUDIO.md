@@ -119,7 +119,9 @@ tg5040 (whose `LINEOUT volume` defaults to 26 ≈ −7.5 dB). tg5050's
 **both platforms** maps percent → digital raw through a perceptual-taper
 table (`dB = 36.4·log10(val/100) − 4.6`): 50% ≈ −15 dB instead of −38 dB,
 and the top is held 4.6 dB under full scale because both speaker amps
-audibly distort with the DAC at 0 dB. tg5040's table is mirrored into
+audibly distort with the DAC at 0 dB. Below 40% the taper bends down a further
+13.8·((40−val)/35)² dB (2026-09-29) so step 1 lands at ~−66 dB, near
+upstream's −68 dB; the plain log curve left it at a loud −52 dB. tg5040's table is mirrored into
 attenuation steps for its reversed register. The Brick's analog stage stays
 at its default 26, so it sits ~7.5 dB quieter than the TSPS at the same
 dial position.
