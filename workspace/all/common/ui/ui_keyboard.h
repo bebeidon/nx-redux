@@ -18,4 +18,9 @@ char* UIKeyboard_open(const char* prompt);
 #define KB_START_CANCELS (1 << 0)
 char* UIKeyboard_openEx(const char* prompt, int flags);
 
+// UIKeyboard_openEx with the input line pre-filled with `initial` (NULL or ""
+// for none; cut at a character boundary if longer than the input limit), for
+// prompts that edit an existing value such as Rename.
+char* UIKeyboard_openWith(const char* prompt, const char* initial, int flags);
+
 #endif // UI_KEYBOARD_H

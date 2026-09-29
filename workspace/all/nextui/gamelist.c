@@ -642,9 +642,14 @@ static void doAddToCollection(const char* rom_path) {
 static bool doRename(Entry* entry, int sel) {
 	char prompt[MAX_PATH];
 	snprintf(prompt, sizeof(prompt), "Rename: %s", entry->name);
-	char* newname = UIKeyboard_open(prompt);
+	// start from the name the row shows (e.g. "Alien vs. Predator (Japan)"
+	// for an arcade clone), so a small edit doesn't mean retyping it all
+	const char* current = entry->unique ? entry->unique : entry->name;
+	char* newname = UIKeyboard_openWith(prompt, current, 0);
 	requestBackgroundReupload(); // keyboard cleared the layers, same row stays
-	if (!newname || strlen(newname) == 0) {
+	// confirming the untouched name is a cancel: writing it as an alias would
+	// pin today's label into map.txt for nothing
+	if (!newname || strlen(newname) == 0 || exactMatch(newname, current)) {
 		free(newname);
 		return false;
 	}
