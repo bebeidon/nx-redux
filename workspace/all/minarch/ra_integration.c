@@ -939,7 +939,7 @@ static void ra_login_callback(int result, const char* error_message,
 /*****************************************************************************
  * Helper: Prefetch all achievement badges for the loaded game
  *****************************************************************************/
-static void ra_prefetch_badges(rc_client_t* client) {
+static void ra_prefetch_badges(rc_client_t* client, uint32_t game_id) {
 	// Get the achievement list
 	rc_client_achievement_list_t* list = rc_client_create_achievement_list(client,
 																		   RC_CLIENT_ACHIEVEMENT_CATEGORY_CORE_AND_UNOFFICIAL,
@@ -978,7 +978,7 @@ static void ra_prefetch_badges(rc_client_t* client) {
 	}
 
 	// Prefetch all badges
-	RA_Badges_prefetch(badge_names, idx);
+	RA_Badges_prefetch(game_id, badge_names, idx);
 
 	free(badge_names);
 	rc_client_destroy_achievement_list(list);
@@ -1020,7 +1020,7 @@ static void ra_game_loaded_callback(int result, const char* error_message,
 
 			// Initialize badge cache and prefetch achievement badges
 			RA_Badges_init();
-			ra_prefetch_badges(client);
+			ra_prefetch_badges(client, game->id);
 
 			// Show achievement summary
 			rc_client_user_game_summary_t summary;
@@ -1463,6 +1463,7 @@ void RA_doFrame(void) {
 	// Process any pending HTTP responses before checking achievements
 	// This ensures game load completes and achievements are active
 	ra_process_queued_responses();
+	RA_Badges_update();
 
 	if (ra_client && ra_game_loaded) {
 		rc_client_do_frame(ra_client);
@@ -1507,6 +1508,7 @@ void RA_idle(void) {
 	// Process any responses that arrived during rc_client_idle()
 	// This ensures callbacks from login/game load complete promptly
 	ra_process_queued_responses();
+	RA_Badges_update();
 }
 
 bool RA_isGameLoaded(void) {

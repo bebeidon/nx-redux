@@ -21,6 +21,7 @@
 #include "ra_hash_cdreader.h"
 #include "ra_offline.h"
 #include "ra_offline_net.h"
+#include "ra_badge_sets.h"
 #include "ui_buttonhintbar.h"
 #include "utils.h"
 #include "ui_downloadprogress.h"
@@ -230,9 +231,10 @@ static char* rat_post_and_cache(rc_api_request_t* request, size_t* out_len) {
 	return body;
 }
 
-static void rat_download_badge(const char* url, const char* badge_name, bool locked) {
+// Returns true when the badge is on disk afterwards (cached or downloaded)
+static bool rat_download_badge(const char* url, const char* badge_name, bool locked) {
 	if (!url || !*url || !badge_name || !*badge_name)
-		return;
+		return false;
 	char path[512];
 	// RA_BADGE_CACHE_DIR (ra_badges.h) is SHARED_USERDATA_PATH "/.ra/badges",
 	// no longer adjacent-string-literal-concatenable now that
@@ -245,19 +247,22 @@ static void rat_download_badge(const char* url, const char* badge_name, bool loc
 		snprintf(path, sizeof(path), "%s/.ra/badges/%s.png", SHARED_USERDATA_PATH, badge_name);
 	struct stat st;
 	if (stat(path, &st) == 0 && st.st_size > 0)
-		return; // already cached
+		return true; // already cached
+	bool ok = false;
 	HTTP_Response* resp = HTTP_get(url);
 	if (resp && resp->data && !resp->error && resp->http_status == 200 && resp->size > 0) {
 		FILE* f = fopen(path, "wb");
 		if (f) {
 			size_t wr = fwrite(resp->data, 1, resp->size, f);
 			bool close_ok = fclose(f) == 0;
-			if (wr != resp->size || !close_ok)
+			ok = wr == resp->size && close_ok;
+			if (!ok)
 				remove(path); // truncated write must not satisfy the size>0 skip forever
 		}
 	}
 	if (resp)
 		HTTP_freeResponse(resp);
+	return ok;
 }
 
 // ---------------- UI ----------------
@@ -317,11 +322,17 @@ static void rat_pf_message(SDL_Surface* screen, const char* line1, const char* l
 }
 
 // Download any badge files still missing for a parsed sets response
-// (rat_download_badge skips files already on disk). Returns false if the
-// user cancelled with B mid-way.
+// (rat_download_badge skips files already on disk). Once every badge is on
+// disk, writes the game's badge-set marker so minarch skips the per-file
+// check at launch. Returns false if the user cancelled with B mid-way.
 static bool rat_download_set_badges(SDL_Surface* screen,
 									const rc_api_fetch_game_sets_response_t* sets,
 									const char* label, int done, int total) {
+	char ra_dir[512];
+	snprintf(ra_dir, sizeof(ra_dir), "%s/.ra", SHARED_USERDATA_PATH);
+	// a partial set must not keep an older marker alive
+	RA_BadgeSets_invalidate(ra_dir, sets->id);
+
 	int badge_total = 0;
 	for (uint32_t s = 0; s < sets->num_sets; s++)
 		badge_total += (int)sets->sets[s].num_achievements * 2; // colored + locked
@@ -331,14 +342,23 @@ static bool rat_download_set_badges(SDL_Surface* screen,
 	snprintf(sub, sizeof(sub), "%s - badge 0/%d", label, badge_total);
 	rat_pf_render(screen, "Downloading badges", sub, done, total);
 
+	const char** names = badge_total > 0 ? malloc((size_t)(badge_total / 2) * sizeof(const char*)) : NULL;
+	size_t name_count = 0;
+	bool all_ok = true;
 	for (uint32_t s = 0; s < sets->num_sets; s++) {
 		for (uint32_t a = 0; a < sets->sets[s].num_achievements; a++) {
 			PAD_poll();
-			if (PAD_justPressed(BTN_B))
+			if (PAD_justPressed(BTN_B)) {
+				free(names);
 				return false;
+			}
 			const rc_api_achievement_definition_t* def = &sets->sets[s].achievements[a];
-			rat_download_badge(def->badge_url, def->badge_name, false);
-			rat_download_badge(def->badge_locked_url, def->badge_name, true);
+			bool ok = rat_download_badge(def->badge_url, def->badge_name, false);
+			ok = rat_download_badge(def->badge_locked_url, def->badge_name, true) && ok;
+			if (!ok)
+				all_ok = false;
+			else if (names)
+				names[name_count++] = def->badge_name;
 			badge_done += 2;
 			// refresh every few files so large sets visibly progress
 			// (cheap vs the ~0.5s per actual download)
@@ -348,6 +368,9 @@ static bool rat_download_set_badges(SDL_Surface* screen,
 			}
 		}
 	}
+	if (all_ok && names && name_count > 0)
+		RA_BadgeSets_write(ra_dir, sets->id, names, name_count);
+	free(names);
 	return true;
 }
 

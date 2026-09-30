@@ -4,6 +4,7 @@
 #include "sdl.h"
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 // Implements the badge download/caching that the integration guide leaves to the emulator.
 // See: https://github.com/RetroAchievements/rcheevos/wiki/rc_client-integration#showing-the-game-placard
@@ -44,12 +45,21 @@ void RA_Badges_clearMemory(void);
 /**
  * Pre-download all badges for the current game's achievements.
  * Should be called after game load when achievement list is available.
- * Downloads happen asynchronously in background threads.
- * 
- * @param achievements Array of achievement badge names
- * @param count Number of achievements
+ * Returns immediately: a worker thread checks which badges are already on
+ * disk (skipped entirely when the game's badge-set marker covers them) and
+ * queues downloads for the missing ones.
+ *
+ * @param game_id RetroAchievements game ID (keys the badge-set marker)
+ * @param badge_names Array of achievement badge names (copied)
+ * @param count Number of badge names
  */
-void RA_Badges_prefetch(const char** badge_names, size_t count);
+void RA_Badges_prefetch(uint32_t game_id, const char** badge_names, size_t count);
+
+/**
+ * Show/hide the "Loading achievement badges..." toast. Call once per frame
+ * on the main thread (Notification_* is not thread-safe).
+ */
+void RA_Badges_update(void);
 
 /**
  * Pre-download a single badge asynchronously.

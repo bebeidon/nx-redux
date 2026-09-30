@@ -44,7 +44,7 @@ endif
 # RA support
 ifneq (,$(filter $(PLATFORM),tg5040 tg5050 my355 desktop))
 # RA source files
-SOURCE += ../common/http.c ../common/ra_badges.c ../common/ra_offline.c ../common/ra_offline_net.c ../common/ra_hash_cdreader.c ra_integration.c chd_reader.c
+SOURCE += ../common/http.c ../common/ra_badges.c ../common/ra_badge_sets.c ../common/ra_offline.c ../common/ra_offline_net.c ../common/ra_hash_cdreader.c ra_integration.c chd_reader.c
 endif
 
 # Netplay WiFi (hotspot/AP) support.

@@ -3,6 +3,7 @@
 #include "defines.h"
 #include "api.h"
 #include "notification.h"
+#include "ra_badge_sets.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -65,6 +66,31 @@ static int pending_downloads = 0;
 static bool initialized = false;
 static uint32_t notification_start_time = 0;
 
+// "Loading achievement badges..." toast. Notification_* is not thread-safe,
+// so worker and HTTP threads only request changes here; RA_Badges_update()
+// applies them on the main thread. DONE holds until the next prefetch so a
+// toast that timed out is not shown again for the same game.
+typedef enum {
+	PROGRESS_IDLE,
+	PROGRESS_WANT_SHOW,
+	PROGRESS_SHOWN,
+	PROGRESS_DONE,
+} ProgressState;
+static ProgressState progress_state = PROGRESS_IDLE;
+
+// Prefetch worker: checks which badges are already on disk off the main
+// thread (a cold lookup in a large badge directory costs ~5-12 ms each on
+// exFAT, seconds for a big set) and queues only the missing ones.
+typedef struct {
+	uint32_t game_id;
+	size_t count;
+	char (*names)[MAX_BADGE_NAME];
+} PrefetchJob;
+static SDL_Thread* prefetch_thread = NULL;
+static SDL_atomic_t prefetch_cancel;
+static bool prefetch_running = false; // guarded by badge_mutex
+static uint32_t current_game_id = 0;
+
 // Download queue for rate limiting
 typedef struct {
 	QueuedDownload items[MAX_QUEUED_DOWNLOADS];
@@ -117,6 +143,10 @@ static void ensure_cache_dir(void) {
 	char badges_dir[MAX_PATH];
 	snprintf(badges_dir, sizeof(badges_dir), "%s/.ra/badges", SHARED_USERDATA_PATH);
 	mkdir(badges_dir, 0755);
+}
+
+static void get_ra_dir(char* buf, size_t n) {
+	snprintf(buf, n, "%s/.ra", SHARED_USERDATA_PATH);
 }
 
 // Check if cache file exists
@@ -235,17 +265,13 @@ static bool dequeue_and_start_download(void) {
 		return false;
 	}
 
-	// Build URL and cache path
+	// Build URL and cache path. No disk check here: whoever queued the badge
+	// already found it missing, and this runs on the main thread and in HTTP
+	// callbacks where a lookup in the badge directory would stall.
 	char url[512];
 	char cache_path[MAX_PATH];
 	RA_Badges_getUrl(item->badge_name, item->locked, url, sizeof(url));
 	RA_Badges_getCachePath(item->badge_name, item->locked, cache_path, sizeof(cache_path));
-
-	// Check if already cached on disk
-	if (cache_file_exists(cache_path)) {
-		entry->state = RA_BADGE_STATE_CACHED;
-		return false;
-	}
 
 	// Start download
 	DownloadContext* ctx = (DownloadContext*)malloc(sizeof(DownloadContext));
@@ -313,18 +339,8 @@ static void badge_download_callback(HTTP_Response* response, void* userdata) {
 		entry->state = success ? RA_BADGE_STATE_CACHED : RA_BADGE_STATE_FAILED;
 	}
 
-	// Start next queued download(s)
+	// Start next queued download(s); RA_Badges_update() hides the toast
 	process_download_queue();
-
-	// Check if we should hide the notification
-	// Hide when all downloads complete, or when notification timeout is reached
-	uint32_t elapsed = SDL_GetTicks() - notification_start_time;
-	if (pending_downloads == 0 && download_queue.count == 0) {
-		Notification_hideProgressIndicator();
-	} else if (elapsed >= NOTIFICATION_TIMEOUT_MS) {
-		// Force hide after notification timeout elapses, even if downloads aren't complete
-		Notification_hideProgressIndicator();
-	}
 
 	if (badge_mutex)
 		SDL_UnlockMutex(badge_mutex);
@@ -398,9 +414,21 @@ void RA_Badges_quit(void) {
 	initialized = false;
 }
 
+// Stop the prefetch worker, if any. Must not hold badge_mutex.
+static void stop_prefetch(void) {
+	if (!prefetch_thread)
+		return;
+	SDL_AtomicSet(&prefetch_cancel, 1);
+	SDL_WaitThread(prefetch_thread, NULL);
+	prefetch_thread = NULL;
+	SDL_AtomicSet(&prefetch_cancel, 0);
+}
+
 void RA_Badges_clearMemory(void) {
 	if (!initialized)
 		return;
+
+	stop_prefetch();
 
 	if (badge_mutex)
 		SDL_LockMutex(badge_mutex);
@@ -416,38 +444,158 @@ void RA_Badges_clearMemory(void) {
 		}
 	}
 	badge_cache_count = 0;
+	current_game_id = 0;
+	if (progress_state == PROGRESS_SHOWN)
+		Notification_hideProgressIndicator();
+	progress_state = PROGRESS_IDLE;
 
 	if (badge_mutex)
 		SDL_UnlockMutex(badge_mutex);
 }
 
-void RA_Badges_prefetch(const char** badge_names, size_t count) {
-	if (!initialized)
+// Mark a badge found on disk (must hold mutex)
+static void mark_cached(const char* badge_name, bool locked) {
+	BadgeCacheEntry* entry = find_or_create_entry(badge_name, locked);
+	if (entry && entry->state != RA_BADGE_STATE_DOWNLOADING)
+		entry->state = RA_BADGE_STATE_CACHED;
+}
+
+static int prefetch_worker(void* data) {
+	PrefetchJob* job = (PrefetchJob*)data;
+	char ra_dir[MAX_PATH];
+	get_ra_dir(ra_dir, sizeof(ra_dir));
+
+	const char** names = (const char**)malloc(job->count * sizeof(const char*));
+	if (names) {
+		for (size_t i = 0; i < job->count; i++)
+			names[i] = job->names[i];
+	}
+
+	// Marker hit: every badge of this set was on disk at an earlier launch
+	if (names && RA_BadgeSets_covers(ra_dir, job->game_id, names, job->count)) {
+		SDL_LockMutex(badge_mutex);
+		for (size_t i = 0; i < job->count; i++) {
+			mark_cached(job->names[i], false);
+			mark_cached(job->names[i], true);
+		}
+		SDL_UnlockMutex(badge_mutex);
+		BADGE_LOG_DEBUG("Badge set for game %u already cached (marker)\n", job->game_id);
+	} else {
+		bool all_cached = true;
+		int queued = 0;
+		for (size_t i = 0; i < job->count * 2; i++) {
+			if (SDL_AtomicGet(&prefetch_cancel)) {
+				all_cached = false;
+				break;
+			}
+			const char* name = job->names[i / 2];
+			bool locked = (i % 2) == 1;
+			char cache_path[MAX_PATH];
+			RA_Badges_getCachePath(name, locked, cache_path, sizeof(cache_path));
+			bool exists = cache_file_exists(cache_path); // slow part, no lock held
+
+			SDL_LockMutex(badge_mutex);
+			if (exists) {
+				mark_cached(name, locked);
+			} else {
+				all_cached = false;
+				BadgeCacheEntry* entry = find_or_create_entry(name, locked);
+				if (entry && (entry->state == RA_BADGE_STATE_UNKNOWN ||
+							  entry->state == RA_BADGE_STATE_FAILED)) {
+					queue_download(name, locked);
+					process_download_queue();
+					queued++;
+					if (progress_state == PROGRESS_IDLE)
+						progress_state = PROGRESS_WANT_SHOW;
+				}
+			}
+			SDL_UnlockMutex(badge_mutex);
+		}
+		if (all_cached && names)
+			RA_BadgeSets_write(ra_dir, job->game_id, names, job->count);
+		BADGE_LOG_DEBUG("Badge check for game %u done: %d to download\n", job->game_id, queued);
+	}
+
+	SDL_LockMutex(badge_mutex);
+	prefetch_running = false;
+	SDL_UnlockMutex(badge_mutex);
+
+	free(names);
+	free(job->names);
+	free(job);
+	return 0;
+}
+
+void RA_Badges_prefetch(uint32_t game_id, const char** badge_names, size_t count) {
+	if (!initialized || !badge_names || count == 0)
 		return;
 
-	if (badge_mutex)
-		SDL_LockMutex(badge_mutex);
+	stop_prefetch();
 
+	PrefetchJob* job = (PrefetchJob*)calloc(1, sizeof(PrefetchJob));
+	if (!job)
+		return;
+	job->names = calloc(count, sizeof(*job->names));
+	if (!job->names) {
+		free(job);
+		return;
+	}
+	job->game_id = game_id;
 	for (size_t i = 0; i < count; i++) {
 		if (badge_names[i] && badge_names[i][0]) {
-			// Queue both locked and unlocked versions
-			start_download(badge_names[i], false);
-			start_download(badge_names[i], true);
+			strncpy(job->names[job->count], badge_names[i], MAX_BADGE_NAME - 1);
+			job->count++;
 		}
 	}
 
-	// Show progress indicator if downloads were queued
-	if (download_queue.count > 0) {
+	SDL_LockMutex(badge_mutex);
+	current_game_id = game_id;
+	progress_state = PROGRESS_IDLE;
+	prefetch_running = true;
+	SDL_UnlockMutex(badge_mutex);
+
+	prefetch_thread = SDL_CreateThread(prefetch_worker, "RABadgePrefetch", job);
+	if (!prefetch_thread) {
+		BADGE_LOG_WARN("Failed to start badge prefetch thread\n");
+		SDL_LockMutex(badge_mutex);
+		prefetch_running = false;
+		SDL_UnlockMutex(badge_mutex);
+		free(job->names);
+		free(job);
+	}
+}
+
+void RA_Badges_update(void) {
+	if (!initialized)
+		return;
+
+	SDL_LockMutex(badge_mutex);
+	if (progress_state == PROGRESS_WANT_SHOW) {
 		Notification_setProgressIndicatorPersistent(true);
 		Notification_showProgressIndicator("Loading achievement badges...", "", NULL);
 		notification_start_time = SDL_GetTicks();
-
-		// Start processing the queue (up to MAX_CONCURRENT_DOWNLOADS)
-		process_download_queue();
+		progress_state = PROGRESS_SHOWN;
+	} else if (progress_state == PROGRESS_SHOWN) {
+		bool done = !prefetch_running && pending_downloads == 0 && download_queue.count == 0;
+		// Force hide after the timeout, even if downloads aren't complete
+		if (done || SDL_GetTicks() - notification_start_time >= NOTIFICATION_TIMEOUT_MS) {
+			Notification_hideProgressIndicator();
+			progress_state = PROGRESS_DONE;
+		}
 	}
+	SDL_UnlockMutex(badge_mutex);
+}
 
-	if (badge_mutex)
-		SDL_UnlockMutex(badge_mutex);
+// A badge marked cached failed to load (file deleted or damaged): drop the
+// game's marker so the next launch re-checks the set, and fetch it again.
+// Must hold mutex.
+static void handle_missing_cached(BadgeCacheEntry* entry) {
+	char ra_dir[MAX_PATH];
+	get_ra_dir(ra_dir, sizeof(ra_dir));
+	RA_BadgeSets_invalidate(ra_dir, current_game_id);
+	entry->state = RA_BADGE_STATE_UNKNOWN;
+	queue_download(entry->badge_name, entry->locked);
+	process_download_queue();
 }
 
 
@@ -470,6 +618,8 @@ SDL_Surface* RA_Badges_get(const char* badge_name, bool locked) {
 				entry->surface = load_from_cache(cache_path);
 				if (entry->surface) {
 					entry->surface_scaled = scale_surface(entry->surface, RA_BADGE_NOTIFY_SIZE);
+				} else {
+					handle_missing_cached(entry);
 				}
 			}
 			result = entry->surface;
@@ -504,6 +654,8 @@ SDL_Surface* RA_Badges_getNotificationSize(const char* badge_name, bool locked) 
 				entry->surface = load_from_cache(cache_path);
 				if (entry->surface) {
 					entry->surface_scaled = scale_surface(entry->surface, RA_BADGE_NOTIFY_SIZE);
+				} else {
+					handle_missing_cached(entry);
 				}
 			}
 			result = entry->surface_scaled;
