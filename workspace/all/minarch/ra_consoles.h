@@ -103,6 +103,10 @@ static const RA_ConsoleMapping ra_console_table[] = {
 	{"VB", RC_CONSOLE_VIRTUAL_BOY},
 	// VIC-20
 	{"VIC", RC_CONSOLE_VIC20},
+	// WonderSwan / WonderSwan Color (no bundled core; e.g. the Pak Store
+	// WSC.pak runs mednafen_wswan in minarch). RA uses one console for both.
+	{"WS", RC_CONSOLE_WONDERSWAN},
+	{"WSC", RC_CONSOLE_WONDERSWAN},
 };
 
 #define RA_CONSOLE_TABLE_SIZE (sizeof(ra_console_table) / sizeof(ra_console_table[0]))
