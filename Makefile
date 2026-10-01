@@ -262,6 +262,7 @@ cores: # TODO: can't assume every platform will have the same stock cores (platf
 	cp ./workspace/$(PLATFORM)/cores/output/fbneo_libretro.so ./build/SYSTEM/$(PLATFORM)/paks/Emus/FBN.pak
 	cp ./workspace/$(PLATFORM)/cores/output/mednafen_supafaust_libretro.so ./build/SYSTEM/$(PLATFORM)/paks/Emus/SUPA.pak
 	cp ./workspace/$(PLATFORM)/cores/output/mednafen_vb_libretro.so ./build/SYSTEM/$(PLATFORM)/paks/Emus/VB.pak
+	cp ./workspace/$(PLATFORM)/cores/output/mednafen_wswan_libretro.so ./build/SYSTEM/$(PLATFORM)/paks/Emus/WSC.pak
 	cp ./workspace/$(PLATFORM)/cores/output/cap32_libretro.so ./build/SYSTEM/$(PLATFORM)/paks/Emus/CPC.pak
 	cp ./workspace/$(PLATFORM)/cores/output/puae2021_libretro.so ./build/SYSTEM/$(PLATFORM)/paks/Emus/PUAE.pak
 	cp ./workspace/$(PLATFORM)/cores/output/prboom_libretro.so ./build/SYSTEM/$(PLATFORM)/paks/Emus/PRBOOM.pak

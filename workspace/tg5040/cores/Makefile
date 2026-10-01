@@ -14,6 +14,7 @@ CORES+= libretro-uae
 CORES+= mednafen_pce_fast
 CORES+= mednafen_supafaust
 CORES+= mednafen_vb
+CORES+= mednafen_wswan
 CORES+= mgba
 CORES+= pcsx_rearmed
 CORES+= pet
@@ -64,6 +65,11 @@ mednafen_pce_fast_HASH = 52675734da114a19b3705f03906b1455f3d76644
 
 mednafen_vb_REPO = https://github.com/libretro/beetle-vb-libretro
 mednafen_vb_HASH = 65debc7c4c7b85e2fd988d2be53496c2cf0b5f44
+
+# WonderSwan / WonderSwan Color (WSC.pak). RetroAchievements via the WSC/WS
+# tags (see all/minarch/ra_consoles.h).
+mednafen_wswan_REPO = https://github.com/libretro/beetle-wswan-libretro
+mednafen_wswan_HASH = 4b01295838ea89e3f1355bbe4cb5cf98aa6108cd
 
 fake-08_REPO = https://github.com/jtothebell/fake-08
 fake-08_CORE = fake08_libretro.so

@@ -34,6 +34,8 @@ const CheatdbMap CHEATDB_MAP[] = {
 	{"COLECO", "Coleco - ColecoVision"},
 	{"NGP", "SNK - Neo Geo Pocket"},
 	{"NGPC", "SNK - Neo Geo Pocket Color"},
+	{"WS", "Bandai - WonderSwan"},
+	{"WSC", "Bandai - WonderSwan Color"},
 	{"FBN", "FBNeo - Arcade Games"},
 	{"MSX", "Microsoft - MSX - MSX2 - MSX2P - MSX Turbo R"},
 	{"PRBOOM", "PrBoom"},
