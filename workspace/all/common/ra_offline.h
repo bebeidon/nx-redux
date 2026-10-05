@@ -94,6 +94,36 @@ bool RA_Offline_readCacheFile(const char* relpath, char** out_body,
 bool RA_Offline_handleRequest(const char* post_data, char** out_body,
 							  size_t* out_len, int* out_status);
 
+/**
+ * Online path: journal an awardachievement request (u/a/m params) before it
+ * is sent, so an unlock earned while the connection is flaky survives a quit
+ * before rc_client's in-memory retries get through. Returns false if the
+ * request is not an award or lacks a usable user/achievement/hash.
+ */
+bool RA_Offline_journalAward(const char* post_data);
+
+typedef enum {
+	RA_AWARD_RETRY = -1,   // no/unknown answer (network, 5xx, auth, HTML): keep
+	RA_AWARD_REJECTED = 0, // the achievement no longer exists: drop, not unlocked
+	RA_AWARD_ACCEPTED = 1, // awarded now or already unlocked: done
+} RA_AwardOutcome;
+
+/**
+ * Classify a raw awardachievement response. Deliberately conservative: only
+ * an accepted / already-unlocked answer or the server's "not_found" (HTTP
+ * 404, achievement removed) is final; an auth failure (401
+ * invalid_credentials) or anything unrecognised keeps the unlock journaled.
+ */
+RA_AwardOutcome RA_Offline_classifyAwardResponse(int http_status, const char* body,
+												 size_t body_len);
+
+/**
+ * Drop one entry from the journal once the server has answered it for good
+ * (see RA_Offline_classifyAwardResponse). No-op on a miss.
+ */
+void RA_Offline_removePending(const char* user, uint32_t achievement_id,
+							  const char* game_hash);
+
 /** Hash of the game most recently seen in a gameid/achievementsets request. */
 const char* RA_Offline_currentGameHash(void);
 
@@ -112,16 +142,24 @@ int RA_Offline_pendingCount(void);
 /** Read journal entries into out (up to max). Returns count. */
 int RA_Offline_readJournal(RA_PendingUnlock* out, int max);
 
-/** Read confirmed (synced offline) unlocks into out (up to max). Returns
- *  count. These are already on the server; they are kept so offline replays
- *  and the tools pak keep showing them as unlocked until a fresh online
- *  session cache supersedes them. */
+/** Read confirmed (synced offline) unlocks into out. Returns count. These
+ *  are already on the server; they are kept so offline replays and the tools
+ *  pak keep showing them as unlocked until a fresh online session cache
+ *  supersedes them (and prunes them). Past `max` entries the NEWEST are
+ *  kept: older ones are the likeliest to be covered by a session cache. */
 int RA_Offline_readConfirmed(RA_PendingUnlock* out, int max);
+
+/** Confirmed unlocks for one game hash (any user when `user` is NULL),
+ *  filtered while reading so `max` bounds this game's matches, not the
+ *  whole file. Returns count. */
+int RA_Offline_readConfirmedFor(const char* user, const char* hash,
+								RA_PendingUnlock* out, int max);
 
 /**
  * Submit callback for RA_Offline_sync. Return 0 on success (entry is
  * removed from the journal — treat server "already unlocked" as success),
- * negative to keep the entry for a later sync.
+ * 1 when the server rejected it for good (entry removed, not recorded as
+ * unlocked, not counted as synced), negative to keep it for a later sync.
  */
 typedef int (*RA_SubmitFn)(const RA_PendingUnlock* entry,
 						   uint32_t seconds_since_unlock, void* userdata);
@@ -133,7 +171,8 @@ typedef void (*RA_SyncProgressFn)(int done, int total, void* userdata);
  * Entries for other users are preserved. seconds_since_unlock is
  * max(1, now - entry.when). Journal is rewritten atomically; unparseable
  * lines are preserved verbatim. Writes lastsync on any success (or when
- * there was nothing to sync). Returns number of entries synced, -1 on error.
+ * there was nothing to sync). Returns number of entries synced (rejected
+ * ones excluded), -1 on error.
  */
 int RA_Offline_sync(const char* username, time_t now, RA_SubmitFn submit,
 					RA_SyncProgressFn progress, void* userdata);
