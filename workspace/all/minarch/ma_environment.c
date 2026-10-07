@@ -25,6 +25,29 @@ static bool set_rumble_state(unsigned port, enum retro_rumble_effect effect, uin
 	VIB_setStrength(rumble_strong > rumble_weak ? rumble_strong : rumble_weak);
 	return 1;
 }
+// libretro's perf interface: a monotonic clock and CPU features for real,
+// profiling hooks as no-ops. Some cores call get_time_usec unconditionally
+// (older flycast does while pausing its emulation thread to save a state)
+static retro_time_t perf_get_time_usec(void) {
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (retro_time_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+}
+static uint64_t perf_get_cpu_features(void) {
+#if defined(__aarch64__) || defined(__ARM_NEON)
+	return RETRO_SIMD_NEON;
+#else
+	return 0;
+#endif
+}
+static retro_perf_tick_t perf_get_counter(void) {
+	return (retro_perf_tick_t)perf_get_time_usec();
+}
+static void perf_noop(struct retro_perf_counter* counter) {
+	(void)counter;
+}
+static void perf_log_noop(void) {
+}
 bool environment_callback(unsigned cmd, void* data) { // copied from picoarch initially
 
 	switch (cmd) {
@@ -143,6 +166,22 @@ bool environment_callback(unsigned cmd, void* data) { // copied from picoarch in
 		break;
 	}
 	case RETRO_ENVIRONMENT_SET_AUDIO_CALLBACK: { /* 22 */
+		// minarch never calls a core's audio callback, so refuse it: a core
+		// that was told yes waits to be asked for audio and plays silence
+		// (older flycast builds), while a refused one pushes samples itself
+		return false;
+	}
+	case RETRO_ENVIRONMENT_GET_PERF_INTERFACE: { /* 28 */
+		struct retro_perf_callback* cb = (struct retro_perf_callback*)data;
+		if (!cb)
+			return false;
+		cb->get_time_usec = perf_get_time_usec;
+		cb->get_cpu_features = perf_get_cpu_features;
+		cb->get_perf_counter = perf_get_counter;
+		cb->perf_register = perf_noop;
+		cb->perf_start = perf_noop;
+		cb->perf_stop = perf_noop;
+		cb->perf_log = perf_log_noop;
 		break;
 	}
 	case RETRO_ENVIRONMENT_GET_RUMBLE_INTERFACE: { /* 23 */
@@ -361,10 +400,14 @@ bool environment_callback(unsigned cmd, void* data) { // copied from picoarch in
 	// 	puts("RETRO_ENVIRONMENT_GET_THROTTLE_STATE"); fflush(stdout);
 	// 	break;
 	// }
-	// case RETRO_ENVIRONMENT_GET_FASTFORWARDING: {
-	// 	puts("RETRO_ENVIRONMENT_GET_FASTFORWARDING"); fflush(stdout);
-	// 	break;
-	// };
+	case RETRO_ENVIRONMENT_GET_FASTFORWARDING: { /* 49 */
+		// older threaded flycast builds only pace themselves and push audio
+		// once the frontend answers this
+		bool* out = (bool*)data;
+		if (out)
+			*out = fast_forward != 0;
+		break;
+	}
 	case RETRO_ENVIRONMENT_SET_HW_RENDER: {
 		return HWR_setCallback((struct retro_hw_render_callback*)data);
 	}
