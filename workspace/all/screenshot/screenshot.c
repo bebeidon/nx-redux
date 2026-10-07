@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
+#include <strings.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -188,7 +189,9 @@ static int fb0_has_content(void) {
 	return result;
 }
 
-#define DRM_RAW_PATH "/tmp/screenshot_drm.raw"
+// Per-process temp names (set in main): a one-shot CLI capture may run while
+// the armed daemon is capturing too.
+static char drm_raw_path[64];
 
 // tg5040 composite source: the sunxi display engine's write-back channel,
 // exposed as the disp2 debug attr below, returns the final composited panel
@@ -201,8 +204,8 @@ static int fb0_has_content(void) {
 // first), and the writer is blocked ~1s (disp_delay_ms) until the dump lands.
 // Kernel-context vfs_write: the target must live on tmpfs, never the vfat card.
 #define DISP_CAPTURE_ATTR "/sys/class/disp/disp/attr/capture_dump"
-#define DISP_BMP_PATH "/tmp/screenshot_disp.bmp"
-#define DISP_RAW_PATH "/tmp/screenshot_disp.raw"
+static char disp_bmp_path[64];
+static char disp_raw_path[64];
 #define DISP_BMP_HEADER 54
 
 // Compile-time tg5040-only (a sunxi-disp2 hack; tg5050's 5.15 kernel has no
@@ -212,24 +215,26 @@ static int disp_capture_usable(void) {
 		   access(DISP_CAPTURE_ATTR, W_OK) == 0;
 }
 
-// Trigger a write-back dump and strip the BMP header into DISP_RAW_PATH for
+// Trigger a write-back dump and strip the BMP header into disp_raw_path for
 // the rawvideo encode (dump data is top-down BGRA: no flip). Fills video_size
 // from the dump's own header rather than assuming panel geometry.
 static int disp_capture_raw(char* video_size, size_t vn, char* pixfmt, size_t pn) {
-	unlink(DISP_BMP_PATH);
+	unlink(disp_bmp_path);
 	int fd = open(DISP_CAPTURE_ATTR, O_WRONLY);
 	if (fd < 0)
 		return 0;
 	// The kernel store drops the final byte of the written string (it assumes
 	// echo's trailing newline; verified live: a bare path came out truncated
 	// to ".bm"), so send one for it to eat. The write blocks ~1s.
-	ssize_t wr = write(fd, DISP_BMP_PATH "\n", strlen(DISP_BMP_PATH) + 1);
+	char attr_arg[sizeof(disp_bmp_path) + 1];
+	snprintf(attr_arg, sizeof(attr_arg), "%s\n", disp_bmp_path);
+	ssize_t wr = write(fd, attr_arg, strlen(attr_arg));
 	close(fd);
 	if (wr < 0)
 		return 0;
 
 	int ok = 0;
-	FILE* in = fopen(DISP_BMP_PATH, "r");
+	FILE* in = fopen(disp_bmp_path, "r");
 	if (!in)
 		return 0;
 	uint8_t hdr[DISP_BMP_HEADER];
@@ -247,7 +252,7 @@ static int disp_capture_raw(char* video_size, size_t vn, char* pixfmt, size_t pn
 			(size_t)st.st_size >= DISP_BMP_HEADER + frame) {
 			uint8_t* buf = malloc(frame);
 			if (buf && fread(buf, 1, frame, in) == frame) {
-				FILE* out = fopen(DISP_RAW_PATH, "w");
+				FILE* out = fopen(disp_raw_path, "w");
 				if (out) {
 					ok = fwrite(buf, 1, frame, out) == frame;
 					fclose(out);
@@ -261,11 +266,11 @@ static int disp_capture_raw(char* video_size, size_t vn, char* pixfmt, size_t pn
 		}
 	}
 	fclose(in);
-	unlink(DISP_BMP_PATH);
+	unlink(disp_bmp_path);
 	return ok;
 }
 
-// Capture the current DRM scanout (see common/drm_scanout.c) to DRM_RAW_PATH
+// Capture the current DRM scanout (see common/drm_scanout.c) to drm_raw_path
 // and fill video_size ("WxH") + pixfmt for the ffmpeg rawvideo encode. This
 // is the primary tg5050 source — it captures ANY app, including third-party
 // paks that don't publish the GPU mirror; on tg5040 drm_scanout_read fails
@@ -280,7 +285,7 @@ static int drm_capture_raw(char* video_size, size_t vn, char* pixfmt, size_t pn)
 		return 0;
 	int ok = 0;
 	if (drm_scanout_read(&info, buf, frame)) {
-		FILE* out = fopen(DRM_RAW_PATH, "w");
+		FILE* out = fopen(drm_raw_path, "w");
 		if (out) {
 			ok = fwrite(buf, 1, frame, out) == frame;
 			fclose(out);
@@ -294,9 +299,27 @@ static int drm_capture_raw(char* video_size, size_t vn, char* pixfmt, size_t pn)
 	return ok;
 }
 
-static void capture_screenshot(void) {
-	mkdir_p(SCREENSHOT_DIR);
+// Directory part of path, created if missing (output may be any CLI path)
+static void mkdir_parent(const char* path) {
+	char dir[512];
+	snprintf(dir, sizeof(dir), "%s", path);
+	char* slash = strrchr(dir, '/');
+	if (slash && slash != dir) {
+		*slash = '\0';
+		mkdir_p(dir);
+	}
+}
 
+static int has_suffix(const char* s, const char* suffix) {
+	size_t n = strlen(s), m = strlen(suffix);
+	return n >= m && strcasecmp(s + n - m, suffix) == 0;
+}
+
+// Captures the screen to output (NULL: timestamped JPEG in SCREENSHOT_DIR;
+// a .bmp output is lossless — the stock ffmpeg has no PNG encoder). notify toasts the result through
+// trimui_osdd; the CLI keeps quiet so the toast can't land in the next shot.
+// Returns 1 on success.
+static int capture_screenshot(const char* output_arg, int notify) {
 	// Pick a source, in order of preference:
 	//   1. live GPU mirror (app-published, vsync'd frame)
 	//   2. DRM plane readback (composited scanout — works for ANY app on
@@ -344,23 +367,33 @@ static void capture_screenshot(void) {
 	if (src == SRC_NONE) {
 		// Nothing can supply pixels here: fail honestly instead of writing
 		// an all-black JPEG and claiming success.
-		osd_toast("Capture not available here", 2000);
-		return;
+		if (notify)
+			osd_toast("Capture not available here", 2000);
+		return 0;
 	}
 	if (src == SRC_MIRROR)
 		mirror_video_size(video_size, sizeof(video_size));
 
-	time_t now = time(NULL);
-	struct tm* t = localtime(&now);
 	char output[512];
-	snprintf(output, sizeof(output),
-			 SCREENSHOT_DIR "/SCR_%04d%02d%02d_%02d%02d%02d.jpg",
-			 t->tm_year + 1900, t->tm_mon + 1, t->tm_mday,
-			 t->tm_hour, t->tm_min, t->tm_sec);
+	if (output_arg) {
+		snprintf(output, sizeof(output), "%s", output_arg);
+	} else {
+		time_t now = time(NULL);
+		struct tm* t = localtime(&now);
+		snprintf(output, sizeof(output),
+				 SCREENSHOT_DIR "/SCR_%04d%02d%02d_%02d%02d%02d.jpg",
+				 t->tm_year + 1900, t->tm_mon + 1, t->tm_mday,
+				 t->tm_hour, t->tm_min, t->tm_sec);
+	}
+	mkdir_parent(output);
+	const char* codec = has_suffix(output, ".bmp") ? "bmp" : "mjpeg";
 
 	pid_t pid = fork();
-	if (pid < 0)
-		return;
+	if (pid < 0) {
+		remove(drm_raw_path);
+		remove(disp_raw_path);
+		return 0;
+	}
 
 	if (pid == 0) {
 		setsid();
@@ -374,7 +407,7 @@ static void capture_screenshot(void) {
 				  "-video_size", video_size,
 				  "-i", FB_MIRROR_PATH,
 				  "-vf", "vflip",
-				  "-frames:v", "1", "-c:v", "mjpeg", "-q:v", "2",
+				  "-frames:v", "1", "-c:v", codec, "-q:v", "2",
 				  "-y", output,
 				  (char*)NULL);
 		} else if (src == SRC_DRM || src == SRC_DISP) {
@@ -382,14 +415,14 @@ static void capture_screenshot(void) {
 			execl(FFMPEG_PATH, "ffmpeg", "-nostdin",
 				  "-f", "rawvideo", "-pixel_format", pixfmt,
 				  "-video_size", video_size,
-				  "-i", src == SRC_DRM ? DRM_RAW_PATH : DISP_RAW_PATH,
-				  "-frames:v", "1", "-c:v", "mjpeg", "-q:v", "2",
+				  "-i", src == SRC_DRM ? drm_raw_path : disp_raw_path,
+				  "-frames:v", "1", "-c:v", codec, "-q:v", "2",
 				  "-y", output,
 				  (char*)NULL);
 		} else {
 			execl(FFMPEG_PATH, "ffmpeg", "-nostdin",
 				  "-f", "fbdev", "-i", "/dev/fb0",
-				  "-frames:v", "1", "-c:v", "mjpeg", "-q:v", "2",
+				  "-frames:v", "1", "-c:v", codec, "-q:v", "2",
 				  "-y", output,
 				  (char*)NULL);
 		}
@@ -400,16 +433,55 @@ static void capture_screenshot(void) {
 	int status = 0;
 	waitpid(pid, &status, 0);
 	if (src == SRC_DRM)
-		remove(DRM_RAW_PATH);
+		remove(drm_raw_path);
 	if (src == SRC_DISP)
-		remove(DISP_RAW_PATH);
-	if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
-		osd_toast("Screenshot saved", 1500);
-	else
-		osd_toast("Screenshot failed", 1500);
+		remove(disp_raw_path);
+	int ok = WIFEXITED(status) && WEXITSTATUS(status) == 0;
+	if (notify)
+		osd_toast(ok ? "Screenshot saved" : "Screenshot failed", 1500);
+	if (ok && !notify)
+		printf("%s\n", output);
+	return ok;
+}
+
+static void usage(const char* argv0) {
+	fprintf(stderr,
+			"usage: %s                    run the L2+R2 capture daemon\n"
+			"       %s --capture [FILE]   take one screenshot now and exit\n"
+			"\n"
+			"FILE defaults to " SCREENSHOT_DIR "/SCR_<timestamp>.jpg;\n"
+			"FILE ending in .bmp is saved lossless, anything else as JPEG\n"
+			"(the device's ffmpeg has no PNG encoder). Prints the saved path.\n",
+			argv0, argv0);
 }
 
 int main(int argc, char* argv[]) {
+	snprintf(drm_raw_path, sizeof(drm_raw_path), "/tmp/screenshot_drm.%d.raw", (int)getpid());
+	snprintf(disp_bmp_path, sizeof(disp_bmp_path), "/tmp/screenshot_disp.%d.bmp", (int)getpid());
+	snprintf(disp_raw_path, sizeof(disp_raw_path), "/tmp/screenshot_disp.%d.raw", (int)getpid());
+
+	if (argc > 1) {
+		if (strcmp(argv[1], "--capture") == 0 || strcmp(argv[1], "-c") == 0) {
+			if (argc > 3) {
+				usage(argv[0]);
+				return 2;
+			}
+			if (argc == 3 && has_suffix(argv[2], ".png")) {
+				fprintf(stderr, "screenshot: no PNG encoder on this device; use .jpg or .bmp\n");
+				return 2;
+			}
+			// One-shot: no PID file, so apps don't start mirroring for us;
+			// the DRM (tg5050) / disp write-back (tg5040) readbacks see the
+			// composited panel without it.
+			if (capture_screenshot(argc == 3 ? argv[2] : NULL, 0))
+				return 0;
+			fprintf(stderr, "screenshot: capture failed\n");
+			return 1;
+		}
+		usage(argv[0]);
+		return strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0 ? 0 : 2;
+	}
+
 	struct sigaction sa = {0};
 	sa.sa_handler = on_term;
 	sigaction(SIGTERM, &sa, NULL);
@@ -464,7 +536,7 @@ int main(int argc, char* argv[]) {
 		if (l2_pressed && r2_pressed) {
 			if (!combo_latched && (now_ms - last_capture_ms) > COOLDOWN_MS) {
 				combo_latched = 1;
-				capture_screenshot();
+				capture_screenshot(NULL, 1);
 				last_capture_ms = now_ms;
 			}
 		} else {
