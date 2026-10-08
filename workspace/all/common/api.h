@@ -780,6 +780,10 @@ void PLAT_GPU_Flip();
 void PLAT_spritesClear(void);
 void PLAT_spriteAdd(SDL_Texture* tex, const SDL_Rect* src, const SDL_Rect* dst, Uint8 alpha, const SDL_Rect* clip);
 void PLAT_spriteAddUnder(SDL_Texture* tex, const SDL_Rect* src, const SDL_Rect* dst, Uint8 alpha, const SDL_Rect* clip);
+// PLAT_spriteAdd with a grey colour mod: the texture's colours times shade/255 (a card darkened toward black whose
+// transparent corners stay transparent, as a black sprite over it would not).
+void PLAT_spriteAddShaded(SDL_Texture* tex, const SDL_Rect* src, const SDL_Rect* dst, Uint8 alpha, Uint8 shade,
+						  const SDL_Rect* clip);
 // Drop tex's sprites from both lists before the next clear: for a sprite the next present must no longer show (a List
 // marquee's held title, once its GPU scroll takes over between full frames).
 void PLAT_spriteRemove(SDL_Texture* tex);
@@ -816,6 +820,10 @@ void PLAT_spriteAddUnderOpaque(SDL_Texture* tex, const SDL_Rect* dst);
 // transparent outside them (a Backdrop game list's sprite frame: its picture and row are sprites), so a full-screen
 // blend of clear pixels is skipped. Consumed by that flip; n <= 0 = the whole screen.
 void PLAT_setScreenDrawBands(const int* y, const int* h, int n);
+// Draw rows [y, y + h) of the screen texture at opacity a (a colour and alpha mod: the premultiplied layer at true
+// opacity over what is under it), on every composite until set again; a = 255 (or h <= 0) clears it. False when the
+// screen doesn't composite premultiplied (nothing set: the caller dims in software instead).
+bool PLAT_setScreenDim(int y, int h, Uint8 a);
 // Re-upload a surface's pixels into its texture (one it already has; a no-op otherwise): for a small surface redrawn
 // every frame (the Grid's edge shade), without making a new texture each time.
 void PLAT_textureRefresh(SDL_Surface* s);

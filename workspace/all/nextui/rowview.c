@@ -294,7 +294,7 @@ static int captionNameLines(const SDL_Surface* screen, RowKind k) {
 }
 
 // The caption's reserved height (px): the Carousel's name lines + the info line; the Backdrop's name's one line +
-// two info rows.
+// two info rows. With Layouts > Extra info hidden, the name's lines alone (no info is drawn: no room kept for it).
 static int captionReserve(const SDL_Surface* screen, RowKind k, CapKind c) {
 	if (c == CAP_NONE)
 		return 0;
@@ -304,6 +304,8 @@ static int captionReserve(const SDL_Surface* screen, RowKind k, CapKind c) {
 	int ih = fi ? TTF_FontHeight(fi) : 0;
 	// a Carousel's info lines per device (ui_text_sizes.h CAROUSEL_CAPTION_INFO_LINES)
 	int info_lines = (int)TextPx_for(CAROUSEL_CAPTION_INFO_LINES, UIScale_deviceIndex(UI_DEVICE_NAME));
+	if (!CFG_getExtraInfo())
+		ih = 0;
 	return k == ROW_CAROUSEL ? captionNameLines(screen, k) * nh + (info_lines > 1 ? info_lines : 1) * ih : nh + 2 * ih;
 }
 
@@ -1699,10 +1701,11 @@ static SDL_Surface* captionSurface(const CapStyle* cs, const char* path, const c
 }
 
 // A game's info rows: the Carousel's one full line (time · n of m · Next), or Backdrop's two, the time then "n of m ·
-// Next: …" (beside a stack too, §8f.4). None for a folder or a tool: the name alone.
+// Next: …" (beside a stack too, §8f.4). None for a folder or a tool, nor with Layouts > Extra info hidden: the name
+// alone.
 static int captionRows(Entry* e, TileKind kind, bool one_line, SegRow rows[2]) {
 	memset(rows, 0, sizeof(SegRow) * 2);
-	if (kind != TILE_GAME)
+	if (kind != TILE_GAME || !CFG_getExtraInfo())
 		return 0;
 	InfoSeg segs[3];
 	int n = gameSegments(e, segs);
@@ -2720,7 +2723,10 @@ static void prefetchOne(const RowGeo* g, Entry* e, TileKind k, bool side, bool l
 			slotItem(g, e, k, false); // a logo-less console's name slot
 		}
 	} else {
-		slotItem(g, e, k, side);
+		// Collections and Tools draw as GPU sprites outside a context menu (their full slot, scaled by the GPU at rest
+		// too: drawRested): that slot and its texture, not a side copy
+		bool sprites = (g->kind == ROW_BACKDROP_COLL || g->kind == ROW_BACKDROP_TOOL) && !ContextMenu_isOpen();
+		prefetchTexture(slotItem(g, e, k, side && !sprites), sprites);
 	}
 }
 
@@ -2797,10 +2803,11 @@ void RowView_render(SDL_Surface* screen, int lastScreen) {
 	RowKind kind = currentKind();
 	// A game list's Carousel or Backdrop as GPU sprites (both orientations): the body is only filled when it may hold
 	// something else (bodyFill), the Carousel's plain black (and under the hint bar's scrim, every frame: the host
-	// clears the bars' rows), the Backdrop's transparent over its picture, under the screen. Consoles' sprites keep
-	// their black fill every frame.
+	// clears the bars' rows), the Backdrop's transparent over its picture, under the screen. The frameless rows'
+	// sprites (Consoles, Collections, Tools: their slots, logos and counts) keep their black fill every frame.
 	bool game_sprites = RowView_gameSprites();
-	bool consoles_sprites = kind == ROW_BACKDROP_LOGO && !ContextMenu_isOpen();
+	bool slot_sprites =
+		(kind == ROW_BACKDROP_LOGO || kind == ROW_BACKDROP_COLL || kind == ROW_BACKDROP_TOOL) && !ContextMenu_isOpen();
 	game_frame_sprites = game_sprites;
 	if (game_sprites) {
 		bodyFill(screen, kind == ROW_CAROUSEL ? BODY_BLACK : BODY_CLEAR, lastScreen);
@@ -2811,7 +2818,7 @@ void RowView_render(SDL_Surface* screen, int lastScreen) {
 		// plain black under the row (and under the hint bar's scrim); a Backdrop game list's picture is already drawn
 		SDL_FillRect(screen, &(SDL_Rect){0, bar, screen->w, screen->h - bar},
 					 SDL_MapRGBA(screen->format, 0, 0, 0, 255));
-		if (consoles_sprites) {
+		if (slot_sprites) {
 			body_changed = body_changed || body_left != BODY_BLACK || lastScreen != SCREEN_GAMELIST;
 			body_now = BODY_BLACK;
 		}
@@ -2864,10 +2871,10 @@ void RowView_render(SDL_Surface* screen, int lastScreen) {
 	if (kind == ROW_BACKDROP_LOGO)
 		RowView_warmConsoleArt(g.full_w, g.full_h, pad_w, pad_h, sel);
 
-	// Consoles and a game list's Carousel and Backdrop: the pictures, captions and counts go to the GPU
-	// (RowView_beginSprites), the screen's body stays as bodyFill left it (not under a context menu: it draws over the
-	// body on the screen, under the sprites)
-	RowView_beginSprites(consoles_sprites || game_sprites);
+	// Consoles, Collections, Tools and a game list's Carousel and Backdrop: the pictures, captions and counts go to the
+	// GPU (RowView_beginSprites), the screen's body stays as bodyFill left it (not under a context menu: it draws over
+	// the body on the screen, under the sprites)
+	RowView_beginSprites(slot_sprites || game_sprites);
 
 	// a game Carousel or Backdrop: the selection centred with its caption, the neighbours on the body's centre
 	// (carouselItemCy)
