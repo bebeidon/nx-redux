@@ -35,6 +35,8 @@
 
 static rc_client_t* ra_client = NULL;
 static bool ra_game_loaded = false;
+// RA answered but has no set for this file's hash (an unsupported dump)
+static bool ra_game_unknown = false;
 static bool ra_logged_in = false;
 
 // Current game hash (for mute file path)
@@ -1151,14 +1153,19 @@ static void ra_game_loaded_callback(int result, const char* error_message,
 			}
 
 			char message[NOTIFICATION_MAX_MESSAGE];
-			snprintf(message, sizeof(message), "%s - %u/%u achievements",
-					 game->title, display_unlocked, display_total);
+			if (display_total == 0)
+				snprintf(message, sizeof(message), "%s - no achievements yet", game->title);
+			else
+				snprintf(message, sizeof(message), "%s - %u/%u achievements",
+						 game->title, display_unlocked, display_total);
 			Notification_push(NOTIFICATION_ACHIEVEMENT, message, NULL);
 		} else {
 			RA_LOG_WARN("Game not recognized by RetroAchievements\n");
+			ra_game_unknown = true;
 		}
 	} else {
 		ra_game_loaded = false;
+		ra_game_unknown = (result == RC_NO_GAME_LOADED);
 		RA_LOG_ERROR("Game load failed: %s\n", error_message ? error_message : "unknown error");
 	}
 }
@@ -1322,6 +1329,7 @@ void RA_quit(void) {
 	ra_queue_quit();
 
 	ra_game_loaded = false;
+	ra_game_unknown = false;
 	ra_logged_in = false;
 }
 
@@ -1415,6 +1423,7 @@ static void ra_do_load_game(const char* rom_path, const uint8_t* rom_data, size_
 							const char* core_name) {
 	strncpy(ra_current_rom_path, rom_path, sizeof(ra_current_rom_path) - 1);
 	ra_current_rom_path[sizeof(ra_current_rom_path) - 1] = '\0';
+	ra_game_unknown = false;
 
 	// core + ROM extension + tag (ra_consoles.h): resolved before the load so
 	// the memory regions below exist when rcheevos validates addresses
@@ -1501,6 +1510,7 @@ void RA_unloadGame(void) {
 	if (!ra_client) {
 		return;
 	}
+	ra_game_unknown = false;
 
 	if (ra_game_loaded) {
 		RA_LOG_INFO("Unloading game\n");
@@ -1621,6 +1631,10 @@ void RA_idle(void) {
 
 bool RA_isGameLoaded(void) {
 	return ra_game_loaded;
+}
+
+bool RA_isGameUnknown(void) {
+	return ra_game_unknown;
 }
 
 bool RA_isHardcoreModeActive(void) {

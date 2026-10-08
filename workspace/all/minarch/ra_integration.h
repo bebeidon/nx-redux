@@ -78,6 +78,12 @@ void RA_onMenuOpen(void);
 bool RA_isGameLoaded(void);
 
 /**
+ * Check if RetroAchievements answered that it has no game for this file's hash
+ * (an unsupported dump or region). False while loading, offline or on success.
+ */
+bool RA_isGameUnknown(void);
+
+/**
  * Check if hardcore mode is currently active.
  * Use this to block save states, cheats, etc.
  * @return true if hardcore mode is active

@@ -463,7 +463,10 @@ static int OptionAchievements_showDetail(MenuList* list, int i) {
 
 static int OptionAchievements_openMenu(MenuList* list, int i) {
 	if (!RA_isGameLoaded()) {
-		Menu_message("No game loaded for achievements", (char*[]){"B", "BACK", NULL});
+		if (RA_isGameUnknown())
+			Menu_message("RetroAchievements doesn't recognize\nthis game file. Use a supported\ndump listed on retroachievements.org.", (char*[]){"B", "BACK", NULL});
+		else
+			Menu_message("No game loaded for achievements", (char*[]){"B", "BACK", NULL});
 		return MENU_CALLBACK_NOP;
 	}
 
@@ -471,7 +474,7 @@ static int OptionAchievements_openMenu(MenuList* list, int i) {
 	RA_getAchievementSummary(&unlocked, &total);
 
 	if (total == 0) {
-		Menu_message("No achievements available for this game", (char*[]){"B", "BACK", NULL});
+		Menu_message("This game has no achievements yet", (char*[]){"B", "BACK", NULL});
 		return MENU_CALLBACK_NOP;
 	}
 
@@ -896,8 +899,10 @@ void OptionAchievements_updateDesc(void) {
 			options_menu.items[6].desc = ach_desc_buffer;
 			return;
 		}
+		options_menu.items[6].desc = (char*)"No achievements yet";
+		return;
 	}
-	options_menu.items[6].desc = NULL;
+	options_menu.items[6].desc = RA_isGameUnknown() ? (char*)"Game not recognized" : NULL;
 }
 
 // Arcade zips without a map.txt alias get the title the launcher shows for them
