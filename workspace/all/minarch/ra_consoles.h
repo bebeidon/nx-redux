@@ -84,7 +84,7 @@ static const RA_ConsoleMapping ra_console_table[] = {
 	// PlayStation
 	{"PS", RC_CONSOLE_PLAYSTATION},
 	// PlayStation (SwanStation)
-	{"PSX", RC_CONSOLE_PLAYSTATION},
+	{"SWAN", RC_CONSOLE_PLAYSTATION},
 	// Amiga
 	{"PUAE", RC_CONSOLE_AMIGA},
 	// Sega CD
@@ -99,8 +99,6 @@ static const RA_ConsoleMapping ra_console_table[] = {
 	{"SMS", RC_CONSOLE_MASTER_SYSTEM},
 	// Super Famicom (Supafaust)
 	{"SUPA", RC_CONSOLE_SUPER_NINTENDO},
-	// PlayStation (SWAN)
-	{"SWAN", RC_CONSOLE_PLAYSTATION},
 	// Virtual Boy
 	{"VB", RC_CONSOLE_VIRTUAL_BOY},
 	// VIC-20
