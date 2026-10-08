@@ -51,13 +51,14 @@ void UI_renderConfirmDialogHints(SDL_Surface* dst, const char* title,
 								 const char* subtitle, char** hints) {
 	if (!hints)
 		hints = confirm_default_hints;
+	bool has_buttons = hints[0] != NULL; // {NULL}: a notice with no buttons
 	int padding_x = SCALE1(PADDING * 4);
 	int content_w = dst->w - padding_x * 2;
 
 	GFX_clearLayers(LAYER_SCROLLTEXT);
 	SDL_FillRect(dst, NULL, SDL_MapRGB(dst->format, 0, 0, 0));
 
-	int btn_sz = SCALE1(BUTTON_SIZE);
+	int btn_sz = SCALE1(BUTTON_SIZE); // the centred button row (UI_renderCenteredButtons)
 
 	// Wrap the subtitle ourselves into centered lines so a long subtitle
 	// (a) leaves room for the buttons below it and (b) stays horizontally
@@ -72,7 +73,8 @@ void UI_renderConfirmDialogHints(SDL_Surface* dst, const char* title,
 	int total_h = title_h;
 	if (sub_line_count)
 		total_h += SCALE1(BUTTON_MARGIN) + sub_line_count * sub_line_h;
-	total_h += SCALE1(BUTTON_MARGIN) + btn_sz;
+	if (has_buttons)
+		total_h += SCALE1(BUTTON_MARGIN) + btn_sz;
 
 	int y = (dst->h - total_h) / 2;
 
@@ -99,8 +101,10 @@ void UI_renderConfirmDialogHints(SDL_Surface* dst, const char* title,
 	}
 
 	// Buttons
-	y += SCALE1(BUTTON_MARGIN);
-	UI_renderCenteredButtons(dst, y, hints);
+	if (has_buttons) {
+		y += SCALE1(BUTTON_MARGIN);
+		UI_renderCenteredButtons(dst, y, hints);
+	}
 }
 
 int UI_modalLoop(const UI_ModalOpts* o) {

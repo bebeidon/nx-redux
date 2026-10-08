@@ -1,3 +1,4 @@
+# license: modifies SDL_drastic (SDL2) (https://github.com/trngaje/SDL_drastic), zlib (LICENSE.txt); this patch is distributed under the same license.
 diff --git a/CMakeLists.txt b/CMakeLists.txt
 index 284c2a6f5..563ca6e70 100644
 --- a/CMakeLists.txt

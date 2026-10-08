@@ -29,9 +29,21 @@ void RA_quit(void);
  * @param rom_path Path to the ROM file
  * @param rom_data Pointer to ROM data in memory (can be NULL if core loads from file)
  * @param rom_size Size of ROM data in bytes
- * @param emu_tag The emulator tag (e.g., "GB", "SFC", "PS") for console identification
+ * @param emu_tag The emulator tag (e.g., "GB", "SFC", "PS")
+ * @param core_name The libretro core's name ("gambatte" for gambatte_libretro.so);
+ *                  with the tag and ROM extension it picks the RA console
+ *                  (see RA_detectConsole), so custom paks and multi-system
+ *                  cores work. May be NULL.
  */
-void RA_loadGame(const char* rom_path, const uint8_t* rom_data, size_t rom_size, const char* emu_tag);
+void RA_loadGame(const char* rom_path, const uint8_t* rom_data, size_t rom_size, const char* emu_tag,
+				 const char* core_name);
+
+/**
+ * Path to record in the offline cache's rom.txt for the next RA_loadGame (the
+ * launcher's ROM path). Needed when RA_loadGame gets an archive's extracted tmp
+ * copy; when unset, rom.txt records RA_loadGame's rom_path.
+ */
+void RA_setRecordedRomPath(const char* path);
 
 /**
  * Unload the current game from achievement tracking.
@@ -53,10 +65,23 @@ void RA_doFrame(void);
 void RA_idle(void);
 
 /**
+ * The in-game menu just opened: one more login attempt if the launch-time
+ * retries gave up, or a background upload of journaled unlocks if the
+ * session is offline and WiFi is connected. Nothing polls during play.
+ */
+void RA_onMenuOpen(void);
+
+/**
  * Check if a game is currently loaded and being tracked.
  * @return true if a game is loaded and RA is active
  */
 bool RA_isGameLoaded(void);
+
+/**
+ * Check if RetroAchievements answered that it has no game for this file's hash
+ * (an unsupported dump or region). False while loading, offline or on success.
+ */
+bool RA_isGameUnknown(void);
 
 /**
  * Check if hardcore mode is currently active.

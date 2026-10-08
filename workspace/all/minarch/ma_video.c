@@ -1,5 +1,8 @@
 #include "ma_internal.h"
 #include "ma_video.h"
+#include "ma_hwrender.h"
+#include "ma_emutime.h"
+#include "netplay_helper.h" // Multiplayer_isActive
 
 static const char* bitmap_font[] = {
 	['0'] =
@@ -626,23 +629,23 @@ void selectScaler(int src_w, int src_h, int src_p) {
 	renderer.blit = GFX_getScaler(&renderer);
 }
 static void screen_flip(SDL_Surface* screen) {
-#if defined(HAS_RUNTIME_PATHS)
-	// Desktop has no reliable vsync to pace by: the GL swap interval is never
-	// set (PLAT_setVsync is a no-op here), so SDL_GL_SwapWindow returns
-	// immediately, and the monitor's refresh rate is unknown/variable anyway.
-	// The screen-sync present path (GFX_GL_Swap) would therefore run
-	// unthrottled and games fast-forward. Always pace to the core's own fps in
-	// software on desktop; this is correct on any refresh rate and reuses the
-	// same limiter the PAL/core-fps branch below already relies on.
-	GFX_flip_fixed_rate(screen, core.fps);
-#else
-	if (use_core_fps) {
+	if (sync_ref == SYNC_SRC_EMULATED && HWR_active() && !Multiplayer_isActive()) {
+		if (fast_forward) {
+			// fast-forward keeps its usual pacing; buffered audio must not
+			// turn into a sleep once it ends
+			EmuTime_reset();
+			GFX_flip_fixed_rate(screen, core.fps);
+		} else {
+			// a GPU core can cover several vblanks per retro_run (flycast: a
+			// 30 fps game covers two); present after the emulated time it covered
+			GFX_flip_scheduled(screen, EmuTime_takeSlot(core.sample_rate, core.fps), core.fps);
+		}
+	} else if (use_core_fps) {
 		GFX_flip_fixed_rate(screen, core.fps);
 	} else {
 		GFX_GL_Swap();
 		// GFX_flip(screen);
 	}
-#endif
 }
 
 // couple of animation functions for pixel data keeping them all cause wanna use them later
@@ -965,6 +968,95 @@ static void convert_rgb565_to_rgba(const void* src, uint32_t* dst, unsigned widt
 	}
 }
 
+// GPU core frame: the pixels never touch the CPU, so the software-only extras
+// (fade-in, debug HUD, ambient colour) are skipped in this spike.
+// Debug HUD for a GPU core: the same text the software path draws into its
+// frame, drawn into a transparent buffer the size of the frame and shown over
+// the game. Refreshed every HWR_HUD_EVERY presents (the upload is ~1 MB), with
+// one extra line: emulation speed from the core's audio rate, the figure that
+// shows whether a GPU core keeps up (its presents/s alone can mislead).
+#define HWR_HUD_EVERY 15
+static uint32_t* hwr_hud = NULL;
+static size_t hwr_hud_len = 0;
+static int hwr_hud_shown = 0;
+
+static void video_hw_hud(unsigned width, unsigned height, unsigned present) {
+	static unsigned long long speed_total = 0;
+	static uint32_t speed_ms = 0;
+	static int speed_pct = -1;
+	if (!show_debug) {
+		if (hwr_hud_shown) {
+			PLAT_HWR_setHud(NULL, 0, 0);
+			hwr_hud_shown = 0;
+		}
+		return;
+	}
+	uint32_t now = SDL_GetTicks();
+	if (speed_ms == 0 || now - speed_ms >= 1000) {
+		unsigned long long total = EmuTime_totalFrames();
+		if (speed_ms != 0 && core.sample_rate > 0)
+			speed_pct = (int)((total - speed_total) * 1000.0 / (now - speed_ms) / core.sample_rate * 100.0 + 0.5);
+		speed_total = total;
+		speed_ms = now;
+	}
+	if (hwr_hud_shown && present % HWR_HUD_EVERY != 0)
+		return;
+	size_t needed = (size_t)width * height;
+	if (hwr_hud_len < needed) {
+		uint32_t* tmp = realloc(hwr_hud, needed * sizeof(uint32_t));
+		if (!tmp)
+			return;
+		hwr_hud = tmp;
+		hwr_hud_len = needed;
+	}
+	memset(hwr_hud, 0, needed * sizeof(uint32_t)); // transparent outside the text
+	drawDebugHud(hwr_hud, width, height, width * sizeof(uint32_t), fmt);
+	if (speed_pct >= 0 && SDL_GetTicks() > 5000) {
+		char text[32];
+		snprintf(text, sizeof(text), "EMU %d%%", speed_pct);
+		blitBitmapText(text, 2 + renderer.src_x, 2 + renderer.src_y + 44, hwr_hud, width, width, height);
+	}
+	PLAT_HWR_setHud(hwr_hud, width, height);
+	hwr_hud_shown = 1;
+}
+
+// Ambient LEDs for a GPU core: the frame's average colour comes from a small
+// GPU downsample (the software path averages its CPU frame).
+#define HWR_AMBIENT_EVERY 8 // LEDs fade between colours; 7.5 updates/s is smooth and halves the readback cost
+#define HWR_AMBIENT_SIZE 32
+static void video_hw_ambient(unsigned present) {
+	static uint32_t avg[HWR_AMBIENT_SIZE * HWR_AMBIENT_SIZE];
+	if (!ambient_mode || fast_forward || present % HWR_AMBIENT_EVERY != 0)
+		return;
+	if (PLAT_HWR_readAverage(avg, HWR_AMBIENT_SIZE, HWR_AMBIENT_SIZE))
+		GFX_setAmbientColor(avg, HWR_AMBIENT_SIZE, HWR_AMBIENT_SIZE, HWR_AMBIENT_SIZE * sizeof(uint32_t), ambient_mode);
+}
+
+static void video_refresh_hw(const void* data, unsigned width, unsigned height) {
+	static unsigned present = 0;
+	Special_render();
+	if (!HWR_submitFrame(data, width, height))
+		return;
+	HWR_clampFrame(&width, &height);
+	present++;
+	video_hw_ambient(present);
+	if (renderer.dst_p == 0 || width != renderer.true_w || height != renderer.true_h) {
+		selectScaler(width, height, width * 4);
+		GFX_clearAll();
+		if (!shader_reset_suppressed)
+			GFX_resetShaders();
+		else
+			shader_reset_suppressed = 0;
+	}
+	// after the scaler: the HUD text is placed from renderer.*
+	video_hw_hud(width, height, present);
+	renderer.src = NULL;
+	renderer.dst = screen->pixels;
+	GFX_blitRenderer(&renderer);
+	screen_flip(screen);
+	last_flip_time = SDL_GetTicks();
+}
+
 void video_refresh_callback(const void* data, unsigned width, unsigned height, size_t pitch) {
 	// Log NEON availability once on first call
 	static int neon_logged = 0;
@@ -990,6 +1082,13 @@ void video_refresh_callback(const void* data, unsigned width, unsigned height, s
 	// pixel conversion and ambient scan for frames that will never be shown
 	if (fast_forward && SDL_GetTicks() - last_flip_time < FF_FRAME_INTERVAL_MS)
 		return;
+
+	if (HWR_active()) {
+		video_refresh_hw(data, width, height);
+		return;
+	}
+	if (data == RETRO_HW_FRAME_BUFFER_VALID)
+		return; // a GPU frame with no GPU path: not pixel data
 
 	// Allocate RGBA buffer if needed
 	if (!rgbaData || rgbaDataSize != width * height) {
@@ -1039,6 +1138,9 @@ void Video_cleanup(void) {
 		rgbaData = NULL;
 		rgbaDataSize = 0;
 	}
+	free(hwr_hud);
+	hwr_hud = NULL;
+	hwr_hud_len = 0;
 	if (fade_buffer) {
 		free(fade_buffer);
 		fade_buffer = NULL;

@@ -28,7 +28,7 @@ static MusicSnapshotWire current_snapshot;
 static char current_error[MUSIC_SERVICE_MAX_ERROR];
 static char owner_path[MUSIC_SERVICE_MAX_PATH];
 static int64_t next_reconnect_ms;
-static int64_t next_poll_ms;
+static int64_t last_poll_ms; /* 0 = poll on the next update */
 #define MUSIC_CLIENT_SPAWN_BACKOFF_MIN_MS 1000
 #define MUSIC_CLIENT_SPAWN_BACKOFF_MAX_MS 30000
 static int64_t next_spawn_ms;
@@ -104,7 +104,7 @@ static bool attach(bool allow_start) {
 		return false;
 	client_fd = MusicService_connect(NULL, 20);
 	if (client_fd >= 0) {
-		next_poll_ms = 0;
+		last_poll_ms = 0;
 		next_spawn_ms = 0;
 		spawn_backoff_ms = MUSIC_CLIENT_SPAWN_BACKOFF_MIN_MS;
 		return true;
@@ -189,15 +189,19 @@ void MusicClient_disconnect(void) {
 }
 
 void MusicClient_update(void) {
+	MusicClient_updateWithin(MUSIC_CLIENT_POLL_INTERVAL_MS);
+}
+
+void MusicClient_updateWithin(int max_age_ms) {
 	int64_t now = monotonic_ms();
 	if (client_fd < 0) {
 		if (!attach(owner_path[0] != '\0'))
 			return;
-		next_poll_ms = 0;
+		last_poll_ms = 0;
 	}
-	if (now < next_poll_ms)
+	if (last_poll_ms && now - last_poll_ms < max_age_ms)
 		return;
-	next_poll_ms = now + MUSIC_CLIENT_POLL_INTERVAL_MS;
+	last_poll_ms = now;
 	(void)request(MUSIC_CMD_SNAPSHOT, NULL, 0, MUSIC_CLIENT_REQUEST_TIMEOUT_MS);
 }
 

@@ -16,12 +16,6 @@ endif
 
 include ../../$(PLATFORM)/platform/Makefile.env
 
-# Per-OS build outputs for desktop: macOS (host) and Linux (docker) share
-# this checkout, so packaging passes BUILD_SUBDIR=desktop-<os>-<arch> to keep
-# their artifacts apart. Devices never pass it: the default keeps their
-# build/<platform> paths byte-identical.
-BUILD_SUBDIR ?= $(PLATFORM)
-
 SDL?=SDL
 
 ###########################################################
@@ -37,19 +31,12 @@ SOURCE = ratools.c ratools_data.c ratools_browser.c ratools_sync.c ratools_prefe
          $(COMMON_PATH)/utils.c $(COMMON_PATH)/api.c $(COMMON_PATH)/text_shape.c $(COMMON_PATH)/audio_manager.c \
          $(COMMON_PATH)/config.c $(COMMON_PATH)/scaler.c \
          $(COMMON_PATH)/http.c $(COMMON_PATH)/ra_auth.c $(COMMON_PATH)/wifi.c \
-         $(COMMON_PATH)/ra_offline.c $(COMMON_PATH)/ra_offline_net.c \
+         $(COMMON_PATH)/ra_offline.c $(COMMON_PATH)/ra_offline_net.c $(COMMON_PATH)/ra_badge_sets.c \
          $(COMMON_PATH)/ra_hash_cdreader.c ../minarch/chd_reader.c \
          $(COMMON_PATH)/display_helper.c \
          $(UI_COMPONENT_SRCS) $(UI_DIR)/ui_list.c $(UI_LISTVIEW_SRCS) \
          $(UI_DIR)/ui_keyboard.c \
-         $(COMMON_PATH)/paths.c \
          ../../$(PLATFORM)/platform/platform.c
-
-# Desktop's platform.c backs PLAT_wifiConnected with a real reachability probe
-# (device platform.c doesn't; it uses generic_wifi.c) -- desktop-only source.
-ifeq ($(PLATFORM), desktop)
-SOURCE += ../common/desktop_probe.c
-endif
 
 CC = $(CROSS_COMPILE)gcc
 CFLAGS += $(OPT)
@@ -57,10 +44,10 @@ CFLAGS += $(INCDIR) -I../../$(PLATFORM)/libmsettings -DPLATFORM=\"$(PLATFORM)\" 
 CFLAGS += -DRC_CLIENT_SUPPORTS_HASH -DHAS_CHDR
 LDFLAGS += -L../../$(PLATFORM)/libmsettings -lmsettings -lrcheevos -lchdr
 
-PRODUCT= build/$(BUILD_SUBDIR)/$(TARGET).elf
+PRODUCT= build/$(PLATFORM)/$(TARGET).elf
 
 all: $(PREFIX_LOCAL)/include/msettings.h $(PREFIX_LOCAL)/lib/librcheevos.a $(PREFIX_LOCAL)/lib/libchdr.so
-	mkdir -p build/$(BUILD_SUBDIR)
+	mkdir -p build/$(PLATFORM)
 	$(CC) $(SOURCE) -o $(PRODUCT) $(CFLAGS) $(LDFLAGS)
 clean:
 	rm -f $(PRODUCT)

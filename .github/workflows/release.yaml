@@ -104,6 +104,12 @@ jobs:
           for f in workspace/all/cores/patches/${{ matrix.core }}/*.patch; do
             [ -f "$f" ] && FILES="$FILES $f"
           done
+          # - the patch applier, and a core's own build files (e.g. flycast's
+          #   build script and toolchain in workspace/all/cores/flycast/)
+          FILES="$FILES workspace/all/cores/apply-patches.sh"
+          for f in $(find workspace/all/cores/${{ matrix.core }} -type f 2>/dev/null | sort); do
+            FILES="$FILES $f"
+          done
           HASH=$(cat $FILES | sha256sum | cut -d' ' -f1)
           echo "hash=$HASH" >> $GITHUB_OUTPUT
 
@@ -128,10 +134,49 @@ jobs:
           name: core-${{ matrix.toolchain }}-${{ matrix.core }}.zip
           path: workspace/${{ env.PLATFORM }}/cores/output/
 
+  build-prebuilt:
+    # Third-party binaries built from pinned source (workspace/all/prebuilts/);
+    # shared ones (ffplay, rsync, GLideN64) only with the tg5040 toolchain.
+    runs-on: ubuntu-24.04-arm
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { toolchain: tg5040, prebuilt: ffplay, inputs: "workspace/all/mediaplayer/include/ffplay/**", overlay: false }
+          - { toolchain: tg5040, prebuilt: rsync, inputs: "workspace/all/prebuilts/rsync.sh", overlay: false }
+          - { toolchain: tg5040, prebuilt: gliden64, inputs: "workspace/all/other/mupen64plus/GLideN64-standalone.patch", overlay: true }
+          - { toolchain: tg5040, prebuilt: mupen64plus, inputs: "workspace/all/other/mupen64plus/mupen64plus-*.patch", overlay: true }
+          - { toolchain: tg5050, prebuilt: mupen64plus, inputs: "workspace/all/other/mupen64plus/mupen64plus-*.patch", overlay: true }
+          - { toolchain: tg5040, prebuilt: sdl2-drastic, inputs: "workspace/all/other/sdl2-drastic/**", overlay: false }
+          - { toolchain: tg5050, prebuilt: sdl2-drastic, inputs: "workspace/all/other/sdl2-drastic/**", overlay: false }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5.0.0
+
+      - name: Restore cached prebuilt
+        id: cache
+        uses: actions/cache@v5
+        with:
+          path: workspace/all/prebuilts/output/
+          # only the N64 plugins (overlay: true) compile the in-game overlay from
+          # workspace/all/common, so only their key follows it
+          key: prebuilt-${{ matrix.toolchain }}-${{ matrix.prebuilt }}-${{ hashFiles(format('workspace/all/prebuilts/{0}.sh', matrix.prebuilt), matrix.inputs) }}${{ matrix.overlay && format('-{0}', hashFiles('workspace/all/common/**', 'workspace/all/include/**')) || '' }}
+
+      - name: Build ${{ matrix.prebuilt }}
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: make build-prebuilt PLATFORM=${{ matrix.toolchain }} PREBUILT=${{ matrix.prebuilt }}
+
+      - name: Upload prebuilt
+        uses: actions/upload-artifact@v6.0.0
+        with:
+          name: prebuilt-${{ matrix.toolchain }}-${{ matrix.prebuilt }}
+          path: workspace/all/prebuilts/output/
+
   build:
     needs:
       - prepare
       - build-core
+      - build-prebuilt
     runs-on: ubuntu-24.04-arm
     env:
       BUILD_TAG: ${{ needs.prepare.outputs.next-tag }}
@@ -148,6 +193,19 @@ jobs:
 
       - name: Setup
         run: make setup
+
+      - name: Generate ScreenScraper credentials
+        env:
+          SS_DEV_ID: ${{ vars.SS_DEV_ID || secrets.SS_DEV_ID }}
+          SS_DEV_PASSWORD: ${{ secrets.SS_DEV_PASSWORD }}
+        run: sh scripts/gen-ss-credentials.sh
+
+      - name: Download prebuilts
+        uses: actions/download-artifact@v7.0.0
+        with:
+          path: workspace/all/prebuilts/output/
+          pattern: prebuilt-*
+          merge-multiple: true
 
       - name: Download Cores (tg5040)
         uses: actions/download-artifact@v7.0.0
@@ -190,101 +248,9 @@ jobs:
         with:
           subject-path: releases/*.zip
 
-  desktop-macos:
-    needs:
-      - prepare
-    runs-on: macos-14 # arm64
-    # No continue-on-error: the release job needs this job, so a desktop
-    # build failure blocks the tag push and the release. A flaky runner is
-    # handled by re-running the failed job, not by shipping without it.
-    env:
-      BUILD_TAG: ${{ needs.prepare.outputs.next-tag }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5.0.0
-        with:
-          fetch-depth: 0
-
-      - name: Install dependencies
-        # rsync: bundled into the app for Device Sync (package-macos.sh copies
-        # the brew binary + dylibbundles its libs; macOS's own openrsync has
-        # no --daemon mode).
-        run: brew install gcc make sdl2 sdl3 sdl2_image sdl2_ttf sqlite libsamplerate libzip lz4 dylibbundler cmake rsync sevenzip
-
-      # Unlike the device jobs (output-only cache + skipped build step), the
-      # package target always runs `gmake cores`, whose up-to-date check needs
-      # the .patched markers inside src/ — so cache src+output together: on a
-      # hit the cores step is a sub-second no-op, on a miss it rebuilds and
-      # re-caches. Exact-key only (no restore-keys): a stale src tree would
-      # skip re-applying changed patches, so any build-input change must start
-      # from a clean clone, same semantics as the device per-core cache.
-      - name: Restore cached cores
-        uses: actions/cache@v5
-        with:
-          path: |
-            workspace/desktop/cores/src/macos-arm64/
-            workspace/desktop/cores/output/macos-arm64/
-          key: cores-desktop-macos-arm64-${{ hashFiles('workspace/desktop/cores/Makefile', 'workspace/all/cores/Makefile', 'workspace/desktop/cores/patches/**', 'workspace/all/cores/patches/**') }}
-
-      - name: Package
-        run: make package-macos BUILD_TAG=${{ needs.prepare.outputs.next-tag }}
-
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v6.0.0
-        with:
-          name: release-artifacts-macos
-          path: releases/*.zip
-
-      - name: Attest Build Provenance
-        uses: actions/attest-build-provenance@v3.2.0
-        with:
-          subject-path: releases/*.zip
-
-  desktop-linux:
-    needs:
-      - prepare
-    runs-on: ubuntu-24.04 # amd64: compose runs without emulation
-    # No continue-on-error: same gating as desktop-macos — a failed AppImage
-    # build blocks the tag push and the release.
-    env:
-      BUILD_TAG: ${{ needs.prepare.outputs.next-tag }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5.0.0
-        with:
-          fetch-depth: 0
-
-      # Same src+output caching rationale as desktop-macos (see comment there);
-      # the container sees the restored trees through the bind mount, and
-      # package-appimage.sh chowns the cores dir back to the runner user so the
-      # post-job cache save can read what the root container wrote.
-      - name: Restore cached cores
-        uses: actions/cache@v5
-        with:
-          path: |
-            workspace/desktop/cores/src/linux-x86_64/
-            workspace/desktop/cores/output/linux-x86_64/
-          key: cores-desktop-linux-x86_64-${{ hashFiles('workspace/desktop/cores/Makefile', 'workspace/all/cores/Makefile', 'workspace/desktop/cores/patches/**', 'workspace/all/cores/patches/**') }}
-
-      - name: Package
-        run: make package-linux BUILD_TAG=${{ needs.prepare.outputs.next-tag }}
-
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v6.0.0
-        with:
-          name: release-artifacts-linux
-          path: releases/*.AppImage
-
-      - name: Attest Build Provenance
-        uses: actions/attest-build-provenance@v3.2.0
-        with:
-          subject-path: releases/*.AppImage
-
   release:
     needs:
       - build
-      - desktop-macos
-      - desktop-linux
       - prepare
     runs-on: ubuntu-24.04-arm
     steps:

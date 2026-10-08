@@ -101,6 +101,12 @@ static int parse_args(int argc, char** argv, WizArgs* a) {
 			a->fetch_to = argv[++i];
 		} else if (strcmp(arg, "--session-file") == 0 && has_value) {
 			a->session_path = argv[++i];
+		} else if (strcmp(arg, "--caps") == 0 && has_value) {
+			a->caps = argv[++i];
+			if (!WizCaps_isValid(a->caps)) {
+				fprintf(stderr, "netplay: --caps must be [A-Za-z0-9._=,-], under %d chars\n", WIZ_CAPS_MAX);
+				return -1;
+			}
 		} else if (strcmp(arg, "--fetch-files") == 0 && has_value) {
 			if (parse_patterns(argv[++i], a) != 0)
 				return -1;
@@ -148,6 +154,7 @@ int wizard_write_session(const char* path, const WizSession* s, const char* game
 			s->player_num, s->num_players);
 	fput_shq(fp, "NETPLAY_GAME", game);
 	fput_shq(fp, "NETPLAY_PREV_SSID", s->prev_ssid);
+	fput_shq(fp, "NETPLAY_PEER_CAPS", s->peer_caps);
 
 	// A short write (tmpfs ENOSPC/EIO) must not read as success: exit 0 is the
 	// hard "start with netplay" contract, and launch.sh would then source a
@@ -306,11 +313,7 @@ static uint32_t wiz_now_ms(void) {
 }
 
 // Everything from here to the end of wiz_restore_prev_ssid() exists to undo
-// hotspot/WiFi-association state, which only the HAS_WIFIMG platforms
-// (tg5040/tg5050) can have. Desktop builds without wifi_direct.c: mode is
-// always "wifi" there and the machine's network association is never touched,
-// so none of this has anything to undo.
-#if defined(HAS_WIFIMG)
+// hotspot/WiFi-association state.
 
 // Signed difference, so the comparison survives the uint32 wrap (same idiom as
 // wizard_sync.c:827).
@@ -543,7 +546,6 @@ static void wiz_restore_prev_ssid(const char* ssid, bool interactive, uint32_t d
 	}
 }
 
-#endif // HAS_WIFIMG
 
 /*
  * Undo the network state a session set up, as the session file describes it.
@@ -619,13 +621,10 @@ static void wiz_teardown(const WizSession* s, bool interactive, uint32_t deadlin
 	wiz_sync_serve_stop();
 
 	// WiFi mode set nothing up to undo: the picker left the device associated to
-	// a real network, which is exactly where it should stay. On desktop that is
-	// the ONLY mode and the wizard never touches the machine's association, so
-	// the rsyncd above was the one possible leak.
+	// a real network, which is exactly where it should stay.
 	if (strcmp(s->mode, "hotspot") != 0)
 		return;
 
-#if defined(HAS_WIFIMG)
 	if (strcmp(s->role, "host") == 0) {
 		wiz_stop_hotspot();
 	} else {
@@ -646,10 +645,6 @@ static void wiz_teardown(const WizSession* s, bool interactive, uint32_t deadlin
 	}
 
 	wiz_restore_prev_ssid(s->prev_ssid, interactive, deadline);
-#else
-	(void)interactive;
-	(void)deadline;
-#endif // HAS_WIFIMG
 }
 
 //////////////////////////////////
@@ -679,13 +674,11 @@ static void wiz_reclaim_session(const char* path, uint32_t deadline) {
 						"undoing what the device still shows\n",
 				path);
 		wiz_sync_serve_stop();
-#if defined(HAS_WIFIMG)
 		// Cheap and never wrong: it only ever removes NXRedux-*/GBLink-*/GBALink-*
 		// entries, which are single-session by construction, and re-enables the
 		// saved networks. There is no prev_ssid to restore, so the supplicant's
 		// own reassociation is what brings WiFi back.
 		WIFI_direct_forgetAllHotspots();
-#endif
 	}
 
 	// Unconditional: a file that failed to parse has nothing to act on but must
@@ -723,13 +716,7 @@ static int run_cleanup(const WizArgs* a) {
 	// IFF_UP, so the next run's WIFI_direct_ensureReady() (generic_wifi.c:127-138
 	// via wizard_wifi.c:169-180) believes the stack is fine and never restarts
 	// it. So this probe is NOT behind the session-file gate.
-	//
-	// Desktop never hosts an AP, so there is no orphan to probe for.
-#if defined(HAS_WIFIMG)
 	orphan_ap = wiz_orphan_ap_present();
-#else
-	orphan_ap = false;
-#endif
 
 	// Two cheap system() probes and a missing file: the normal ending of every
 	// launch that did not use netplay, and of one that did and was cleaned up
@@ -757,10 +744,8 @@ static int run_cleanup(const WizArgs* a) {
 	// wiz_reclaim_session() needs. A valid host session runs this arm too — its
 	// own wiz_stop_hotspot() then finds nothing left to do and goes straight on
 	// to restoring prev_ssid.
-#if defined(HAS_WIFIMG)
 	if (orphan_ap)
 		wiz_stop_hotspot_orphan();
-#endif
 
 	if (have_session)
 		wiz_reclaim_session(a->session_path, deadline);
@@ -775,12 +760,7 @@ static int run_cleanup(const WizArgs* a) {
 #define WIZ_MENU_ITEMS 2
 
 static const char* role_items[] = {"Host Game", "Join Game"};
-#if defined(HAS_WIFIMG)
-// Desktop builds have no Hotspot mode (no managed WiFi stack), so the wizard
-// there goes straight from the role menu to the network check with mode
-// "wifi" and this menu never exists.
 static const char* mode_items[] = {"Hotspot", "WiFi"};
-#endif
 
 // One ListView serves both two-item menus; list_id (role_items vs mode_items)
 // tells the widget which one is on screen, so switching states snaps the pill
@@ -809,11 +789,10 @@ static void render_role_menu(const char* game) {
 	GFX_flip(wiz_screen);
 }
 
-#if defined(HAS_WIFIMG)
 static void render_mode_menu(void) {
 	GFX_clear(wiz_screen);
 	ListView* v = &wiz_menu_view;
-	v->title = "Connection";
+	v->title = "Netplay | Connection"; // a page inside the tool names it (LIST-LAYOUT §10.1)
 	v->font = font.large;
 	v->count = WIZ_MENU_ITEMS;
 	v->get_row = wiz_menu_get_row;
@@ -823,7 +802,6 @@ static void render_mode_menu(void) {
 	UI_listViewRender(v, wiz_screen);
 	GFX_flip(wiz_screen);
 }
-#endif
 
 static void show_message(const char* message, int hold_ms) {
 	GFX_clear(wiz_screen);
@@ -870,12 +848,6 @@ static void wiz_cancel(WizSession* s) {
 }
 
 int main(int argc, char* argv[]) {
-	// Before anything touches a path macro: on desktop those are runtime
-	// arrays PATHS_init() fills (defines.h maps the macro on device to a
-	// no-op). --cleanup needs it too — rsync_bin() and CFG_init() both read
-	// resolved paths, and that arm never reaches GFX_init().
-	PATHS_init(PLATFORM);
-
 	WizArgs args;
 	if (parse_args(argc, argv, &args) != 0)
 		return 2;
@@ -911,20 +883,14 @@ int main(int argc, char* argv[]) {
 	// here, inside GFX_init(), which is why this needs no equivalent of
 	// run_cleanup()'s.
 	bool stale_session = (access(args.session_path, F_OK) == 0);
-#if defined(HAS_WIFIMG)
 	bool orphan_ap = wiz_orphan_ap_present();
-#else
-	bool orphan_ap = false; // desktop never hosts an AP
-#endif
 
 	if (stale_session || orphan_ap) {
 		uint32_t deadline = wiz_now_ms() + WIZ_TEARDOWN_BUDGET_MS;
 
 		show_message("Cleaning up previous session...", 0);
-#if defined(HAS_WIFIMG)
 		if (orphan_ap)
 			wiz_stop_hotspot_orphan();
-#endif
 		if (stale_session)
 			wiz_reclaim_session(args.session_path, deadline);
 	}
@@ -934,9 +900,7 @@ int main(int argc, char* argv[]) {
 
 	WizState state = ST_ROLE;
 	int role_selected = 0;
-#if defined(HAS_WIFIMG)
 	int mode_selected = 0;
-#endif
 	// Anything that is not a completed session (including a signal) means
 	// "launch the game without netplay"; only ST_DONE clears this to 0.
 	int exit_code = 1;
@@ -967,16 +931,9 @@ int main(int argc, char* argv[]) {
 					session.player_num = 1;
 					session.num_players = 2;
 				}
-#if defined(HAS_WIFIMG)
 				state = ST_MODE;
 				UI_listViewReset(&wiz_menu_view, WIZ_MENU_ITEMS, mode_items);
 				wiz_menu_view.selected = mode_selected;
-#else
-				// Desktop: the machine's existing network is the only mode, so
-				// ST_MODE's write happens here and the menu never shows.
-				strcpy(session.mode, "wifi");
-				state = ST_NETSETUP;
-#endif
 				dirty = true;
 			} else if (act.type == LISTVIEW_BACK) {
 				role_selected = wiz_menu_view.selected;
@@ -988,7 +945,6 @@ int main(int argc, char* argv[]) {
 			break;
 		}
 
-#if defined(HAS_WIFIMG)
 		case ST_MODE: {
 			ListViewAction act = UI_listViewHandleInput(&wiz_menu_view);
 			if (act.type == LISTVIEW_ACTIVATED) {
@@ -1007,23 +963,15 @@ int main(int argc, char* argv[]) {
 				dirty = true;
 			break;
 		}
-#else
-		case ST_MODE: // unreachable on desktop — ST_ROLE goes straight to ST_NETSETUP
-			break;
-#endif
 
 		case ST_NETSETUP: {
 			int rc;
 
-#if defined(HAS_WIFIMG)
 			bool is_host = (strcmp(session.role, "host") == 0);
 			if (strcmp(session.mode, "hotspot") == 0)
 				rc = is_host ? wiz_hotspot_start(&session, args.game) : wiz_hotspot_join(&session);
 			else
 				rc = wiz_wifi_ensure_connected(&session);
-#else
-			rc = wiz_wifi_ensure_connected(&session);
-#endif
 
 			// Both non-zero arms undo whatever got as far as being set up. A -2
 			// from the WiFi picker or the hotspot list has usually left nothing
@@ -1032,15 +980,9 @@ int main(int argc, char* argv[]) {
 			// network is saved by then.
 			if (rc == -2) {
 				wiz_cancel(&session);
-#if defined(HAS_WIFIMG)
 				state = ST_MODE;
 				UI_listViewReset(&wiz_menu_view, WIZ_MENU_ITEMS, mode_items);
 				wiz_menu_view.selected = mode_selected;
-#else
-				state = ST_ROLE;
-				UI_listViewReset(&wiz_menu_view, WIZ_MENU_ITEMS, role_items);
-				wiz_menu_view.selected = role_selected;
-#endif
 			} else if (rc != 0) {
 				wiz_cancel(&session);
 				exit_code = 2;
@@ -1061,15 +1003,9 @@ int main(int argc, char* argv[]) {
 			// hotspot host has an AP up and both roles may have an rsyncd.
 			if (rc == -2) {
 				wiz_cancel(&session);
-#if defined(HAS_WIFIMG)
 				state = ST_MODE;
 				UI_listViewReset(&wiz_menu_view, WIZ_MENU_ITEMS, mode_items);
 				wiz_menu_view.selected = mode_selected;
-#else
-				state = ST_ROLE;
-				UI_listViewReset(&wiz_menu_view, WIZ_MENU_ITEMS, role_items);
-				wiz_menu_view.selected = role_selected;
-#endif
 			} else if (rc != 0) {
 				wiz_cancel(&session);
 				exit_code = 2;
@@ -1106,11 +1042,9 @@ int main(int argc, char* argv[]) {
 			case ST_ROLE:
 				render_role_menu(args.game);
 				break;
-#if defined(HAS_WIFIMG)
 			case ST_MODE:
 				render_mode_menu();
 				break;
-#endif
 			default:
 				break; // the network states draw their own screens
 			}

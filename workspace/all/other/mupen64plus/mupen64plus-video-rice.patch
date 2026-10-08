@@ -1,3 +1,4 @@
+# license: modifies mupen64plus-video-rice (https://github.com/mupen64plus/mupen64plus-video-rice), GPL-2.0 (LICENSES); this patch is distributed under the same license.
 diff --git a/projects/unix/Makefile b/projects/unix/Makefile
 index da26ff1..b1e8d39 100644
 --- a/projects/unix/Makefile

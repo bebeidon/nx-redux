@@ -1,3 +1,4 @@
+# license: modifies Caprice32 (https://github.com/libretro/libretro-cap32), GPL-2.0 (cap32/COPYING.txt); this patch is distributed under the same license.
 diff --git a/Makefile b/Makefile
 index 1aa1720..228fb6b 100644
 --- a/Makefile

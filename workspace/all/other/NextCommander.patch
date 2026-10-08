@@ -1,3 +1,4 @@
+# license: modifies NextCommander (https://github.com/LoveRetro/NextCommander), which publishes no license (DinguxCommander lineage); this patch carries the same terms as the code it modifies.
 diff --git a/src/def.h b/src/def.h
 index 144ca1d..beaefd7 100644
 --- a/src/def.h

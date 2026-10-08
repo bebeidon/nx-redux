@@ -1,6 +1,7 @@
 #ifndef __DEFINES_H__
 #define __DEFINES_H__
 
+#include <math.h>
 #include "platform.h"
 
 #define VOLUME_MIN 0
@@ -17,34 +18,6 @@
 // by the OSD Music widget (workspace/all/osdmusic) to open the Music Player.
 #define OPEN_PAK_REQUEST_PATH "/tmp/nextui_open"
 
-#ifdef HAS_RUNTIME_PATHS
-// Desktop: roots resolved at runtime (env/HOME) by PATHS_init(PLATFORM),
-// which every main() calls first. Values byte-match the device macros.
-#include "paths.h"
-#define SDCARD_PATH PATHS_SDCARD
-#define ROMS_PATH PATHS_ROMS
-#define ROOT_SYSTEM_PATH PATHS_ROOT_SYSTEM
-#define SYSTEM_PATH PATHS_SYSTEM
-#define RES_PATH PATHS_RES
-#define SHARED_SYSTEM_PATH PATHS_SHARED_SYSTEM
-#define SHARED_BIN_PATH PATHS_SHARED_BIN
-#define USERDATA_PATH PATHS_USERDATA
-#define SHARED_USERDATA_PATH PATHS_SHARED_USERDATA
-#define PAKS_PATH PATHS_PAKS
-#define BIN_PATH PATHS_BIN
-#define TOOLS_PATH PATHS_TOOLS
-#define RECENT_PATH PATHS_RECENT
-#define SHORTCUTS_PATH PATHS_SHORTCUTS
-#define SIMPLE_MODE_PATH PATHS_SIMPLE_MODE
-#define AUTO_RESUME_PATH PATHS_AUTO_RESUME
-#define GAME_SWITCHER_PERSIST_PATH PATHS_GAME_SWITCHER_PERSIST
-#define FAUX_RECENT_PATH PATHS_FAUX_RECENT
-#define COLLECTIONS_PATH PATHS_COLLECTIONS
-#define EMULIST_CACHE_PATH PATHS_EMULIST_CACHE
-#define ROMINDEX_CACHE_PATH PATHS_ROMINDEX_CACHE
-#else
-// Device: compile-time literals, unchanged.
-#define PATHS_init(p) // no-op on device
 #define ROMS_PATH SDCARD_PATH "/Roms"
 #define ROOT_SYSTEM_PATH SDCARD_PATH "/.system/"
 #define SYSTEM_PATH SDCARD_PATH "/.system"
@@ -65,12 +38,12 @@
 #define COLLECTIONS_PATH SDCARD_PATH "/Collections"
 #define EMULIST_CACHE_PATH USERDATA_PATH "/emulist_cache.txt"
 #define ROMINDEX_CACHE_PATH USERDATA_PATH "/romindex_cache.txt"
-#endif
 
 #define RESUME_SLOT_DEFAULT 8
 #define AUTO_RESUME_SLOT 9
 
-#define LAST_PATH "/tmp/last.txt" // transient
+#define LAST_PATH "/tmp/last.txt"		 // transient
+#define MENU_TAB_PATH "/tmp/menutab.txt" // transient, next to LAST_PATH
 #define CHANGE_DISC_PATH "/tmp/change_disc.txt"
 #define RESUME_SLOT_PATH "/tmp/resume_slot.txt"
 #define NETPLAY_LAUNCH_PATH "/tmp/netplay_launch"
@@ -126,12 +99,8 @@
 #define SETTINGS_WIDTH 80
 #define HW_INDICATOR_WIDTH (PILL_SIZE + SETTINGS_WIDTH + 10 + 4) // pill drawn by GFX_blitHardwareIndicator
 
-#ifndef MAIN_ROW_COUNT
-#define MAIN_ROW_COUNT 6 // FIXED_HEIGHT / (PILL_SIZE * FIXED_SCALE) - 2 (floor and subtract 1 if not an integer)
-#endif
-
 #ifndef PADDING
-#define PADDING 10 // PILL_SIZE / 3 (or non-integer part of the previous calculatiom divided by three)
+#define PADDING UI_PADDING_UNITS // ui_scale.h: the Brick's 15 px at 3.0, one physical size on every device
 #endif
 
 #define FONT_XLARGE 36 // extra large heading
@@ -164,9 +133,29 @@ enum {
 #define MIN(a, b) (a) < (b) ? (a) : (b)
 #define CEIL_DIV(a, b) ((a) + (b) - 1) / (b)
 
-#define SCALE1(a) ((a) * FIXED_SCALE)
-#define SCALE2(a, b) ((a) * FIXED_SCALE), ((b) * FIXED_SCALE)
-#define SCALE4(a, b, c, d) ((a) * FIXED_SCALE), ((b) * FIXED_SCALE), ((c) * FIXED_SCALE), ((d) * FIXED_SCALE)
+// One UI scale per device (ui_scale.h), fractional on the Brick Pro and the 720p panels: each size rounds to whole
+// pixels on its own, so two summed SCALE1s can sit 1 px off one SCALE1 of the sum.
+#define SCALE1(a) ((int)lroundf((a) * FIXED_SCALE))
+#define SCALE2(a, b) SCALE1(a), SCALE1(b)
+#define SCALE4(a, b, c, d) SCALE1(a), SCALE1(b), SCALE1(c), SCALE1(d)
+// The top bar's and the hint bar's height.
+#define BAR_HEIGHT SCALE1(BUTTON_SIZE + BUTTON_MARGIN * 2)
+// The volume / brightness / colour-temperature indicator: two thirds of the UI scale on 1/16 (2 on the Brick, 1.6875 on
+// the Brick Pro, 1.5 on the Smart Pro family), so its PILL_SIZE pill fits inside the top bar. Its sheets: assets@2x.png
+// and the baked assets@1.6875x.png and assets@1.5x.png (scripts/gen-chrome-assets.py).
+#define INDICATOR_SCALE (roundf(FIXED_SCALE * 2.0f / 3.0f * 16.0f) / 16.0f)
+// mobile dp -> pixels (a 42 dp row is one 30-unit PILL_SIZE row)
+#define NX_DP(x) ((int)((x) * FIXED_SCALE * 30.0f / 42.0f + 0.5f))
+// dp float -> pixels, rounded (layout math stays in dp floats until drawing)
+#define NX_DPF(x) ((int)((x) * FIXED_SCALE * 30.0f / 42.0f + 0.5f))
+// mobile sp -> text pixels (14 sp body text is the 12-unit text size)
+#define NX_SP(x) ((int)((x) * FIXED_SCALE * 12.0f / 14.0f + 0.5f))
+// List row text starts NX_LIST_INSET_DP in (game lists, Settings, Tools, every shared list), on the main menu's 24 dp
+// gutter; its selection pill keeps 14 dp (== SCALE1(BUTTON_PADDING)) round the text, so the pill's edge is 10 dp from
+// the screen's (LIST-LAYOUT §10.1 had 14, which put the pill's rounded end off-screen). Page titles start there too.
+#define NX_LIST_INSET_DP 24
+#define NX_RICH_LIST_GAP_DP 14 // a rich list's thumbnail to its text (LIST-LAYOUT §10.2)
+#define NX_MENU_GUTTER_DP 24
 
 ///////////////////////////////
 
@@ -175,14 +164,6 @@ enum {
 #define HAS_MENU_BUTTON (BUTTON_MENU != BUTTON_NA || CODE_MENU != CODE_NA || JOY_MENU != JOY_NA)
 #define HAS_HOME_BUTTON (BUTTON_HOME != BUTTON_NA || CODE_HOME != CODE_NA || JOY_HOME != JOY_NA)
 #define HAS_SKINNY_SCREEN (FIXED_WIDTH < 320)
-
-// Whether the platform can enter hybrid sleep (screen-off wait-for-wake loop).
-// Handhelds sleep; desktop opts out in its platform.h — its "sleep" would just
-// blank the window while PWR_waitForWake eats every event (including SDL_QUIT,
-// so the app can't even be closed) and, reporting AC power, never times out.
-#ifndef HAS_SLEEP
-#define HAS_SLEEP 1
-#endif
 
 ///////////////////////////////
 

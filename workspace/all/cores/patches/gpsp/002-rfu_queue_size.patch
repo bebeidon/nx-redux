@@ -1,3 +1,4 @@
+# license: modifies gpSP (https://github.com/libretro/gpsp), GPL-2.0 (COPYING); this patch is distributed under the same license.
 diff --git forkSrcPrefix/rfu.c forkDstPrefix/rfu.c
 index 31a515c..a5e0b8f 100644
 --- forkSrcPrefix/rfu.c

@@ -1,6 +1,10 @@
 #include "ma_internal.h"
+#include "ma_emutime.h"
 #include "netplay.h"
 #include "utils.h"
+#include "arcade_names.h"
+#include "core_netplay.h"
+#include "ui_confirmdialog.h"
 #include "config.h"
 #include "ui_list.h"
 #include "ui_buttonhintbar.h"
@@ -129,15 +133,27 @@ void Menu_quit(void) {
 void Menu_beforeSleep() {
 	SRAM_write();
 	RTC_write();
-	State_autosave();
-	if (prefixMatch(SDCARD_PATH, game.path))
-		putFile(AUTO_RESUME_PATH, game.path + strlen(SDCARD_PATH));
+	if (Multiplayer_isActive()) {
+		// No state, no auto-resume: a netplay session can't be resumed, and
+		// serializing flycast stops its emulator, which silently ends GGPO.
+		// Sleeping (or powering off) in a core-run session is leaving it: tell
+		// the other player now, and quit to the list on wake.
+		if (CoreNetplay_isActive()) {
+			CoreNetplay_byeSend(CORE_NETPLAY_BYE_PORT);
+			quit = 1;
+		}
+	} else {
+		State_autosave();
+		if (prefixMatch(SDCARD_PATH, game.path))
+			putFile(AUTO_RESUME_PATH, game.path + strlen(SDCARD_PATH));
+	}
 
 	PWR_setCPUSpeed(CPU_SPEED_MENU);
 }
 void Menu_afterSleep() {
 	unlink(AUTO_RESUME_PATH);
 	setOverclock(overclock);
+	EmuTime_reset();
 }
 static int ach_compare_unlocked_first(const void* a, const void* b) {
 	const rc_client_achievement_t* achA = *(const rc_client_achievement_t**)a;
@@ -447,7 +463,10 @@ static int OptionAchievements_showDetail(MenuList* list, int i) {
 
 static int OptionAchievements_openMenu(MenuList* list, int i) {
 	if (!RA_isGameLoaded()) {
-		Menu_message("No game loaded for achievements", (char*[]){"B", "BACK", NULL});
+		if (RA_isGameUnknown())
+			Menu_message("RetroAchievements doesn't recognize\nthis game file. Use a supported\ndump listed on retroachievements.org.", (char*[]){"B", "BACK", NULL});
+		else
+			Menu_message("No game loaded for achievements", (char*[]){"B", "BACK", NULL});
 		return MENU_CALLBACK_NOP;
 	}
 
@@ -455,7 +474,7 @@ static int OptionAchievements_openMenu(MenuList* list, int i) {
 	RA_getAchievementSummary(&unlocked, &total);
 
 	if (total == 0) {
-		Menu_message("No achievements available for this game", (char*[]){"B", "BACK", NULL});
+		Menu_message("This game has no achievements yet", (char*[]){"B", "BACK", NULL});
 		return MENU_CALLBACK_NOP;
 	}
 
@@ -880,8 +899,37 @@ void OptionAchievements_updateDesc(void) {
 			options_menu.items[6].desc = ach_desc_buffer;
 			return;
 		}
+		options_menu.items[6].desc = (char*)"No achievements yet";
+		return;
 	}
-	options_menu.items[6].desc = NULL;
+	options_menu.items[6].desc = RA_isGameUnknown() ? (char*)"Game not recognized" : NULL;
+}
+
+// Arcade zips without a map.txt alias get the title the launcher shows for them
+// (.system/res/arcade/<TAG>.txt, keyed by the Roms folder's tag), so the menu
+// says "Metal Slug 6" rather than "mslug6". Leaves name alone otherwise. The
+// table is only read for .zip/.7z files, once per game: the answer is cached by
+// ROM path, so later menu opens don't re-parse it (FBN.txt has ~8000 lines).
+static void getArcadeTitle(const char* path, char* name) {
+	static char cached_path[MAX_PATH];
+	static char cached_title[MAX_PATH]; // "" = the table has no title for it
+	if (!ArcadeNames_isArcadeFile(baseName(path)))
+		return;
+	if (strcmp(cached_path, path) != 0) {
+		cached_title[0] = '\0';
+		char tag[MAX_PATH];
+		getEmuName(path, tag);
+		char table_path[MAX_PATH];
+		snprintf(table_path, sizeof(table_path), "%s/arcade/%s.txt", RES_PATH, ArcadeNames_tableTag(tag));
+		ArcadeNames* names = ArcadeNames_load(table_path);
+		const char* title = ArcadeNames_get(names, baseName(path));
+		if (title && strcmp(title, ".") != 0)
+			snprintf(cached_title, sizeof(cached_title), "%s", title);
+		ArcadeNames_free(names);
+		snprintf(cached_path, sizeof(cached_path), "%s", path);
+	}
+	if (cached_title[0])
+		snprintf(name, MAX_PATH, "%s", cached_title);
 }
 
 // alias must be at least MAX_PATH bytes
@@ -941,6 +989,8 @@ int Menu_options(MenuList* list) {
 		;
 	int selected = 0;
 	ListLayout layout = UI_calcListLayout(screen);
+	// an untitled options page keeps the pill list's top gutter (LIST-LAYOUT §10.2)
+	layout.titled = (list->title && list->title[0]) || (list->desc && list->desc[0]);
 	int scroll = 0;
 
 	OptionSaveChanges_updateDesc();
@@ -1069,6 +1119,22 @@ int Menu_options(MenuList* list) {
 		if (defer_menu && !PAD_anyPressed())
 			defer_menu = false;
 
+		// an on_change handler may rebuild the rows (the Shaders page hides
+		// unused shader slots), so recount them after input and before this
+		// frame renders: a row past the new end has a NULL name, and drawing
+		// it with the old count crashed in the text truncation
+		for (count = 0; items[count].name; count++)
+			;
+		if (selected >= count)
+			selected = count - 1;
+		if (selected < 0)
+			selected = 0;
+		if (scroll > 0 && scroll + layout.items_per_page > count) {
+			scroll = count - layout.items_per_page;
+			if (scroll < 0)
+				scroll = 0;
+		}
+
 		if (dirty) {
 			GFX_clear(screen);
 
@@ -1077,8 +1143,12 @@ int Menu_options(MenuList* list) {
 				GFX_drawOnLayer(menu.bitmap, 0, 0, DEVICE_WIDTH, DEVICE_HEIGHT, 0.15f, 1, 0);
 
 			// Top bar with category/list name (legacy lists without a title
-			// keep showing their desc there)
-			UI_renderMenuBar(screen, list->title ? list->title : (list->desc ? list->desc : ""));
+			// keep showing their desc there). A page inside Options names it (LIST-LAYOUT §10.1):
+			// "Options | Core Options"; the Options page itself is plain "Options".
+			if (list->title && strcmp(list->title, "Options") != 0)
+				UI_renderMenuBarPage(screen, "Options", list->title);
+			else
+				UI_renderMenuBar(screen, list->title ? list->title : (list->desc ? list->desc : ""));
 
 			// Build UISettingsItem array from MenuItems
 			UISettingsItem settings_items[count];
@@ -1180,7 +1250,8 @@ void Menu_updateState(void) {
 }
 
 typedef struct {
-	char* pixels;
+	char* pixels;		  // raw GL capture (ABGR8888), or NULL when surface is set
+	SDL_Surface* surface; // ready-to-save surface the worker owns, or NULL
 	char* path;
 	int w;
 	int h;
@@ -1199,7 +1270,8 @@ static SDL_Surface* rawCaptureToSurface(unsigned char* pixels, int w, int h, Uin
 int save_screenshot_thread(void* data) {
 	PWR_pinHelperThread(); // minarch_cpu_affinity=big -> SLOW set (no-op otherwise)
 	SaveImageArgs* args = (SaveImageArgs*)data;
-	SDL_Surface* converted = rawCaptureToSurface(args->pixels, args->w, args->h, SDL_PIXELFORMAT_ARGB8888);
+	SDL_Surface* converted = args->surface ? args->surface
+										   : rawCaptureToSurface(args->pixels, args->w, args->h, SDL_PIXELFORMAT_ARGB8888);
 
 	if (!converted) {
 		SDL_Log("Failed to convert screenshot surface: %s", SDL_GetError());
@@ -1242,11 +1314,36 @@ void Menu_queueScreenshotSave(const char* png_path) {
 	}
 	SaveImageArgs* args = malloc(sizeof(SaveImageArgs));
 	args->pixels = pixels;
+	args->surface = NULL;
 	args->w = cw;
 	args->h = ch;
 	args->path = SDL_strdup(png_path);
-	SDL_WaitThread(screenshotsavethread, NULL);
+	Menu_waitScreenshotSave();
 	screenshotsavethread = SDL_CreateThread(save_screenshot_thread, "SaveScreenshotThread", args);
+}
+// Hands a copy of `surface` to the background PNG-save worker at `png_path`.
+// The in-game menu runs at a capped CPU clock, and a shader's scanlines or
+// LCD grid leave no flat runs for the encoder, so saving the full-screen slot
+// preview inline stalled Save for several seconds with a shader on.
+static void Menu_queueSurfaceSave(SDL_Surface* surface, const char* png_path) {
+	SDL_Surface* copy = SDL_ConvertSurface(surface, surface->format, 0);
+	if (!copy) {
+		SDL_Log("Failed to copy screenshot surface: %s", SDL_GetError());
+		return;
+	}
+	SaveImageArgs* args = malloc(sizeof(SaveImageArgs));
+	args->pixels = NULL;
+	args->surface = copy;
+	args->w = copy->w;
+	args->h = copy->h;
+	args->path = SDL_strdup(png_path);
+	Menu_waitScreenshotSave();
+	screenshotsavethread = SDL_CreateThread(save_screenshot_thread, "SaveScreenshotThread", args);
+}
+// Blocks until a queued PNG save has finished writing, so its file can be read.
+void Menu_waitScreenshotSave(void) {
+	SDL_WaitThread(screenshotsavethread, NULL);
+	screenshotsavethread = NULL;
 }
 void Menu_screenshot(void) {
 	char rom_name[MAX_PATH]; // getDisplayName/getAlias can write up to MAX_PATH
@@ -1325,9 +1422,7 @@ void Menu_saveState(void) {
 		Menu_queueScreenshotSave(menu.bmp_path);
 		newScreenshot = 0;
 	} else if (menu.bitmap) {
-		SDL_RWops* rw = SDL_RWFromFile(menu.bmp_path, "wb");
-		if (rw)
-			IMG_SavePNG_RW(menu.bitmap, rw, 1);
+		Menu_queueSurfaceSave(menu.bitmap, menu.bmp_path);
 	}
 
 	state_slot = menu.slot;
@@ -1410,7 +1505,79 @@ void Menu_undoLoadState(void) {
 	}
 }
 
+// During any netplay session MENU only asks whether to leave: states, rewind
+// and fast-forward are off anyway, and a menu left open stalls the other player.
+// minarch's own engines pause both sides cleanly, so their dialog simply waits;
+// a session the core runs itself (flycast GGPO) can't pause, the other
+// player's game just waits for this one, so no answer within the grace ends
+// the session (leaves), well before the core's disconnect timeout.
+typedef struct {
+	uint32_t start;
+	int seconds_left; // -1: no countdown
+} LeaveNetplayCtx;
+
+static void leaveNetplay_render(SDL_Surface* dst, void* data) {
+	LeaveNetplayCtx* ctx = data;
+	char subtitle[128];
+	if (ctx->seconds_left >= 0)
+		snprintf(subtitle, sizeof(subtitle), "The other player is waiting: %d s left.", ctx->seconds_left);
+	else
+		snprintf(subtitle, sizeof(subtitle), "Leaving ends the netplay session.");
+	UI_renderConfirmDialogHints(dst, "Leave netplay?", subtitle, (char*[]){"B", "CONTINUE", "A", "LEAVE", NULL});
+}
+
+static int leaveNetplay_handle(void* data) {
+	LeaveNetplayCtx* ctx = data;
+	if (Netplay_isConnected())
+		Netplay_pollWhilePaused(); // keep the lockstep link alive, as the full menu did
+	if (CoreNetplay_byePoll()) {   // the other player left meanwhile
+		CoreNetplay_markEnded();
+		return 1;
+	}
+	if (PAD_justPressed(BTN_A))
+		return 1;
+	if (PAD_justPressed(BTN_B) || PAD_justPressed(BTN_MENU))
+		return 0;
+	if (ctx->seconds_left >= 0) {
+		int left = CoreNetplay_leaveSecondsLeft(ctx->start, SDL_GetTicks());
+		if (left != ctx->seconds_left) {
+			ctx->seconds_left = left;
+			return UI_MODAL_DIRTY;
+		}
+	}
+	return UI_MODAL_CONTINUE;
+}
+
+// true = leave the session (and the game)
+static bool Menu_leaveNetplay(void) {
+	bool timed = CoreNetplay_isActive();
+	LeaveNetplayCtx ctx = {SDL_GetTicks(), timed ? CORE_NETPLAY_LEAVE_GRACE_MS / 1000 : -1};
+	UI_ModalOpts opts = {
+		.screen = screen,
+		.render = leaveNetplay_render,
+		.handle = leaveNetplay_handle,
+		.ctx = &ctx,
+		.timeout_ms = timed ? CORE_NETPLAY_LEAVE_GRACE_MS : 0, // expiry returns -1: leave
+		.reset_pad = true,
+	};
+	return UI_modalLoop(&opts) != 0;
+}
+
+void Menu_netplayNotice(const char* title, const char* subtitle, int hold_ms) {
+	if (screen->w != DEVICE_WIDTH || screen->h != DEVICE_HEIGHT)
+		screen = GFX_resize(DEVICE_WIDTH, DEVICE_HEIGHT, DEVICE_PITCH);
+	GFX_clearShaders();
+	// the leave dialog's look, as a notice: no button row
+	UI_renderConfirmDialogHints(screen, title, subtitle, (char*[]){NULL});
+	GFX_flip(screen);
+	if (hold_ms > 0)
+		SDL_Delay(hold_ms);
+}
+
 void Menu_loop(void) {
+	RA_onMenuOpen();
+	// the slot previews below are read back from disk
+	Menu_waitScreenshotSave();
 	menu.bitmap = Menu_captureScreenSurface(SDL_PIXELFORMAT_ARGB8888);
 	SDL_Surface* backing = SDL_CreateRGBSurfaceWithFormat(0, DEVICE_WIDTH, DEVICE_HEIGHT, 32, SDL_PIXELFORMAT_ARGB8888);
 
@@ -1448,7 +1615,8 @@ void Menu_loop(void) {
 	char* tmp;
 	char rom_name[MAX_PATH]; // without extension or cruft
 	getDisplayName(game.name, rom_name);
-	getAlias(game.path, rom_name);
+	if (!getAlias(game.path, rom_name))
+		getArcadeTitle(game.path, rom_name);
 
 	int rom_disc = -1;
 	char disc_name[16];
@@ -1470,6 +1638,13 @@ void Menu_loop(void) {
 
 	//set vid.blit to null for menu drawing no need for blitrender drawing
 	GFX_clearShaders();
+	if (Multiplayer_isActive()) {
+		if (Menu_leaveNetplay()) {
+			Netplay_quitAll(); // as the full menu's Quit: close the link cleanly
+			quit = 1;
+		}
+		show_menu = 0; // straight to the teardown below
+	}
 	while (show_menu) {
 		GFX_startFrame();
 		uint32_t now = SDL_GetTicks();
@@ -1479,6 +1654,10 @@ void Menu_loop(void) {
 		if (Netplay_isConnected()) {
 			Netplay_pollWhilePaused();
 		}
+		// keep RA moving while paused (login retries, server replies). Not
+		// in the achievements page: its list points into the game data a
+		// finishing load would replace.
+		RA_idle();
 		int mp_active = Multiplayer_isActive();
 
 		if (PAD_justPressed(BTN_UP)) {
@@ -1600,8 +1779,10 @@ void Menu_loop(void) {
 			else
 				UI_renderButtonHintBar(screen, (char*[]){"B", "BACK", "A", "SELECT", NULL});
 
-			// list
+			// list: the text on the 14 dp list inset under the title, the pill edge 14 dp left of it (LIST-LAYOUT §10.1)
 			int oy = (((DEVICE_HEIGHT / FIXED_SCALE) - PADDING * 2) - (MENU_ITEM_COUNT * PILL_SIZE)) / 2;
+			int pill_x = UI_listPillX();
+			int text_x = UI_listTextX();
 			for (int i = 0; i < MENU_ITEM_COUNT; i++) {
 				char* item = menu.items[i];
 				SDL_Color text_color = COLOR_WHITE;
@@ -1611,7 +1792,7 @@ void Menu_loop(void) {
 
 					// disc change
 					if (menu.total_discs > 1 && i == ITEM_CONT) {
-						GFX_blitPillDark(ASSET_WHITE_PILL, screen, &(SDL_Rect){SCALE1(PADDING), SCALE1(oy + PADDING), screen->w - SCALE1(PADDING * 2), SCALE1(PILL_SIZE)});
+						GFX_blitPillDark(ASSET_WHITE_PILL, screen, &(SDL_Rect){pill_x, SCALE1(oy + PADDING), screen->w - SCALE1(PADDING) - pill_x, SCALE1(PILL_SIZE)});
 						SDL_Surface* disc_text = GFX_renderText(font.large, disc_name, text_color);
 						if (disc_text) {
 							SDL_BlitSurface(disc_text, NULL, screen, &(SDL_Rect){screen->w - SCALE1(PADDING + BUTTON_PADDING) - disc_text->w, SCALE1(oy + PADDING + 4)});
@@ -1624,13 +1805,13 @@ void Menu_loop(void) {
 					ow += SCALE1(BUTTON_PADDING * 2);
 
 					// pill
-					GFX_blitPillDark(ASSET_WHITE_PILL, screen, &(SDL_Rect){SCALE1(PADDING), SCALE1(oy + PADDING + (i * PILL_SIZE)), ow, SCALE1(PILL_SIZE)});
+					GFX_blitPillDark(ASSET_WHITE_PILL, screen, &(SDL_Rect){pill_x, SCALE1(oy + PADDING + (i * PILL_SIZE)), ow, SCALE1(PILL_SIZE)});
 				}
 
 				// text
 				SDL_Surface* text = GFX_renderText(font.large, item, text_color);
 				if (text) {
-					SDL_BlitSurface(text, NULL, screen, &(SDL_Rect){SCALE1(PADDING + BUTTON_PADDING), SCALE1(oy + PADDING + (i * PILL_SIZE) + 4)});
+					SDL_BlitSurface(text, NULL, screen, &(SDL_Rect){text_x, SCALE1(oy + PADDING + (i * PILL_SIZE) + 4)});
 					SDL_FreeSurface(text);
 				}
 			}

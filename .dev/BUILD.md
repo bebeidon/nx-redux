@@ -1,33 +1,28 @@
 # Building & Deploying
 
-Build system, desktop setup, and per-component iteration. Device facts are in
+Build system and per-component iteration. Device facts are in
 [DEVICES.md](DEVICES.md); on-device testing in [TESTING.md](TESTING.md).
 
 ## Build targets & platforms
 
-The root `Makefile` runs on the **host** (macOS/Linux), not inside Docker, and
-picks a build path from the target platform:
-
-- **Device builds** (`tg5040`, `tg5050`) compile inside the LoveRetro Docker
-  toolchain images and produce flashable release archives.
-- **Desktop builds** (`desktop`) compile natively against Homebrew libraries
-  for fast UI/debug iteration.
+The root `Makefile` runs on the **host** (macOS/Linux), not inside Docker.
+Device builds (`tg5040`, `tg5050`) compile inside the LoveRetro Docker
+toolchain images and produce flashable release archives.
 
 | Platform | Device(s) | Toolchain |
 |---|---|---|
 | `tg5040` | Trimui Smart Pro / Brick / Brick Pro | `ghcr.io/loveretro/tg5040-toolchain:latest` |
 | `tg5050` | Trimui Smart Pro S | `ghcr.io/loveretro/tg5050-toolchain:latest` |
-| `desktop` | Native host debug build | Homebrew GCC + SDL |
 
 `make all` builds both device platforms (`PLATFORMS = tg5040 tg5050`) and
 packages one release zip **per device variant** into `releases/`:
 
-| Zip suffix | Platform | Overlays / bg | OSD |
+| Zip suffix | Platform | Overlays | OSD |
 |---|---|---|---|
-| `-brick` | tg5040 | 768p / 1024 | 1024x768 |
-| `-brickpro` | tg5040 | 768p / 1024 | 1024x768 |
-| `-smartpro` | tg5040 | 720p / 1280 | 1280x720 |
-| `-smartpros` | tg5050 | 720p / 1280 | 1280x720 |
+| `-brick` | tg5040 | 768p | 1024x768 |
+| `-brickpro` | tg5040 | 768p | 1024x768 |
+| `-smartpro` | tg5040 | 720p | 1280x720 |
+| `-smartpros` | tg5050 | 720p | 1280x720 |
 
 Host requirements for device builds: Docker and `adb`. On the first build for
 a platform, its toolchain repo is cloned into `toolchains/` and the Docker
@@ -53,6 +48,24 @@ make deploy PLATFORM=tg5040   # resolves to that platform's first device
 `/mnt/SDCARD/MinUI.zip` and reboots — a full OTA-style update. Payloads are
 per-device: pushing the wrong device's zip leaves that unit without an OSD
 overlay, since each zip carries only its own.
+
+## Third-party prebuilts
+
+ffplay, rsync, mupen64plus (N64.pak), GLideN64 + libpng and SDL_drastic (NDS.pak) are not
+committed: `workspace/all/prebuilts/<name>.sh` builds each from pinned, sha256-checked source
+inside the toolchain image, into `workspace/all/prebuilts/output/<plat>/` (git-ignored, laid out
+like `build/`). `make common` copies them into the release and fails if one is missing. CI builds
+each in its own cached `build-prebuilt` job. Locally, once per checkout (and after changing a
+script, its patches, or `workspace/all/common` for the N64 plugins' overlay):
+
+```sh
+make build-prebuilts PLATFORM=tg5040   # ffplay rsync gliden64 mupen64plus sdl2-drastic
+make build-prebuilts PLATFORM=tg5050   # mupen64plus sdl2-drastic
+make build-prebuilt PLATFORM=tg5040 PREBUILT=ffplay   # just one
+```
+
+The MiSans UI fonts aren't committed either: `make setup` fetches them from Xiaomi
+(`scripts/fetch-misans.py`, cached in `.cache/misans/`).
 
 ## Quick build (single component via Docker)
 
@@ -117,59 +130,18 @@ Component source lives in `workspace/all/<component>` (shared) and
   Makefiles include the fragment. New UI components are added to ui.mk, never
   to individual app Makefiles. There is no umbrella header — include exactly
   the `ui_*.h` you use.
-- Patched vendored projects (mupen64plus/GLideN64, flycast) are cloned at
+- Patched vendored projects (mupen64plus/GLideN64) are cloned at
   **pinned commits** by the platform Makefiles and patched from
   `workspace/all/other/`. Never regenerate a multi-file vendored patch with a
   plain `git diff` — untracked new files vanish from it; splice per-file
   sections instead. See `workspace/all/other/mupen64plus/README.md`.
 
-## Desktop development setup
-
-Prerequisites:
-
-```bash
-brew install gcc sdl2 sdl2_image sdl2_ttf sqlite libsamplerate clang-format dylibbundler make
-```
-
-One-time setup:
-
-```bash
-# 1. The build expects `gcc` to be Homebrew GCC, not Apple Clang. No sudo —
-#    this shims a symlink under /var/tmp/nxredux/bin, not /usr/local/bin:
-scripts/desktop/setup-macos-toolchain.sh
-/var/tmp/nxredux/bin/gcc --version   # must say "Homebrew GCC"
-
-# 2. Fake SD card root at /var/tmp/nxredux/sdcard:
-./workspace/desktop/prepare_fake_sd_root.sh
-
-# 3. compile_commands.json for clangd (gitignored, per-clone):
-make compile-commands
-```
-
-Build and run:
-
-```bash
-cd workspace/desktop/libmsettings
-make build CROSS_COMPILE=/var/tmp/nxredux/bin/ PREFIX=/opt/homebrew PREFIX_LOCAL=/var/tmp/nxredux
-
-cd workspace/all/nextui
-make PLATFORM=desktop CROSS_COMPILE=/var/tmp/nxredux/bin/ PREFIX=/opt/homebrew PREFIX_LOCAL=/var/tmp/nxredux UNAME_S=Darwin
-NXREDUX_SDCARD=/var/tmp/nxredux/sdcard DYLD_LIBRARY_PATH=/opt/homebrew/lib:/var/tmp/nxredux/lib ./build/desktop/nextui.elf
-```
-
-Runtime path roots (desktop only — device builds keep compile-time literals):
-`NXREDUX_SDCARD` picks the "SD card" root directory; if unset it defaults to
-`~/NXRedux`. `NXREDUX_SYSTEM_ROOT` independently overrides just the
-`.system` root (defaults to `<sdcard>/.system`). Use the fake-SD workflow's
-`/var/tmp/nxredux/sdcard` (from `prepare_fake_sd_root.sh` above) for a
-populated dev card, or leave both unset to exercise the real default-root
-path under `$HOME/NXRedux`.
-
 ## IDE setup (clangd)
 
 The project uses **clangd** (VS Code: the llvm-vs-code-extensions.vscode-clangd
 extension; the Microsoft C/C++ IntelliSense is disabled in
-`.vscode/settings.json`). Run `make compile-commands` after cloning.
+`.vscode/settings.json`). Run `make compile-commands` after cloning
+(`compile_commands.json` is gitignored, per-clone).
 
 `make compile-commands` also assembles a two-part include shim so device
 translation units parse on macOS: `build/clangd/include/` (rcheevos symlinks +

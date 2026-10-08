@@ -112,6 +112,10 @@ void UI_fillRoundedRect(SDL_Surface* dst, int x, int y, int w, int h,
 }
 
 SDL_Surface* UI_getScrim(SDL_Surface** cache, int w, int h) {
+	return UI_getScrimAlpha(cache, w, h, 178);
+}
+
+SDL_Surface* UI_getScrimAlpha(SDL_Surface** cache, int w, int h, Uint8 alpha) {
 	SDL_Surface* scrim = *cache;
 	if (!scrim || scrim->w != w || scrim->h != h) {
 		if (scrim)
@@ -119,7 +123,7 @@ SDL_Surface* UI_getScrim(SDL_Surface** cache, int w, int h) {
 		scrim = SDL_CreateRGBSurface(SDL_SWSURFACE, w, h, 32,
 									 0x00FF0000, 0x0000FF00, 0x000000FF, 0xFF000000);
 		if (scrim) {
-			SDL_FillRect(scrim, NULL, SDL_MapRGBA(scrim->format, 0, 0, 0, 178));
+			SDL_FillRect(scrim, NULL, SDL_MapRGBA(scrim->format, 0, 0, 0, alpha));
 			SDL_SetSurfaceBlendMode(scrim, SDL_BLENDMODE_BLEND);
 		}
 		*cache = scrim;
@@ -127,9 +131,8 @@ SDL_Surface* UI_getScrim(SDL_Surface** cache, int w, int h) {
 	return scrim;
 }
 
+// The hint bar's size, so a dialog's buttons match the hint bar's.
 void UI_renderCenteredButtons(SDL_Surface* dst, int y, char** pairs) {
-	int btn_sz = SCALE1(BUTTON_SIZE);
-	int btn_gap = SCALE1(BUTTON_TEXT_GAP);
 	int btn_margin = SCALE1(BUTTON_MARGIN);
 
 	// Measure the row
@@ -137,9 +140,7 @@ void UI_renderCenteredButtons(SDL_Surface* dst, int y, char** pairs) {
 	int count = 0;
 	int total_w = 0;
 	for (int i = 0; pairs[i * 2] && pairs[i * 2 + 1] && count < 8; i++) {
-		int text_w, th;
-		GFX_measureText(font.tiny, pairs[i * 2 + 1], &text_w, &th);
-		widths[count] = btn_sz + btn_gap + text_w;
+		widths[count] = GFX_getButtonWidth(pairs[i * 2 + 1], pairs[i * 2]);
 		total_w += (count > 0 ? btn_margin : 0) + widths[count];
 		count++;
 	}

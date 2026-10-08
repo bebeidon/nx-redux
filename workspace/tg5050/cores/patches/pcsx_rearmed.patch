@@ -1,3 +1,4 @@
+# license: modifies PCSX ReARMed (https://github.com/libretro/pcsx_rearmed), GPL-2.0 (COPYING); this patch is distributed under the same license.
 diff --git a/Makefile.libretro b/Makefile.libretro
 index 2197946c..df72d03d
 --- a/Makefile.libretro

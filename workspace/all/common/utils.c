@@ -851,19 +851,59 @@ static const char* artVariantFolder(int art_type) {
 	}
 }
 
+// A disc of a folder game (/Roms/PS/Game/Game.m3u, or the .cue or a disc beside
+// it) as Home's recents and pins store it: the game's art beside the folder,
+// where the scraper and the game list put it (/Roms/PS/.media/<variant>/Game.png;
+// NULL variant = the root picture). false when the ROM's folder is not a folder
+// game (no folder-named .m3u or .cue in it) or that art is missing; out untouched.
+static bool folderGameArtPath(const char* rom_path, const char* variant, char* out, size_t out_size) {
+	char dir[MAX_PATH];
+	snprintf(dir, sizeof(dir), "%s", rom_path);
+	char* slash = strrchr(dir, '/');
+	if (!slash || slash == dir)
+		return false;
+	*slash = '\0';
+	const char* name = strrchr(dir, '/');
+	if (!name)
+		return false;
+	char game[MAX_PATH];
+	snprintf(game, sizeof(game), "%s/%s.m3u", dir, name + 1);
+	if (!exists(game)) {
+		snprintf(game, sizeof(game), "%s/%s.cue", dir, name + 1);
+		if (!exists(game))
+			return false;
+	}
+	char path[MAX_PATH];
+	ROM_mediaArtVariantPath(dir, variant, path, sizeof(path));
+	if (!exists(path))
+		return false;
+	snprintf(out, out_size, "%s", path);
+	return true;
+}
+
 void ROM_displayArtPath(const char* rom_path, int art_type, bool fallback_to_mix,
 						char* out, size_t out_size) {
 	const char* variant = artVariantFolder(art_type);
 	if (variant) {
 		ROM_mediaArtVariantPath(rom_path, variant, out, out_size);
+		if (exists(out) || folderGameArtPath(rom_path, variant, out, out_size))
+			return;
 		// Caller asked for this variant only: leave the missing path in place
 		// so nothing is drawn, rather than substituting a different image.
-		if (!fallback_to_mix || exists(out))
+		if (!fallback_to_mix)
 			return;
 	}
 	// No variant requested, or the scraper never wrote one for this game
 	// (older libraries only have the mix composite).
 	ROM_mediaArtPath(rom_path, out, out_size);
+	// The mix asked for but never made (the scraper no longer composes it):
+	// the screenshot instead, when there is one.
+	if (!variant && !exists(out)) {
+		char shot[MAX_PATH];
+		ROM_mediaArtVariantPath(rom_path, "screenshot", shot, sizeof(shot));
+		if (exists(shot))
+			snprintf(out, out_size, "%s", shot);
+	}
 }
 
 bool ROM_findArt(const char* rom_path, char* out, size_t out_size) {
@@ -884,6 +924,55 @@ bool ROM_findArt(const char* rom_path, char* out, size_t out_size) {
 	*parent_slash = '\0';
 	snprintf(out, out_size, "%s/.media/%s.png", dir, parent_slash + 1);
 	return exists(out);
+}
+
+bool ROM_findScreenshot(const char* rom_path, char* out, size_t out_size) {
+	ROM_mediaArtVariantPath(rom_path, "screenshot", out, out_size);
+	if (exists(out))
+		return true;
+	char mix[MAX_PATH];
+	ROM_mediaArtPath(rom_path, mix, sizeof(mix));
+	if (exists(mix)) {
+		snprintf(out, out_size, "%s", mix);
+		return true;
+	}
+	// a folder game's disc: the same two, beside the folder (a miss: out stays the screenshot path)
+	return folderGameArtPath(rom_path, "screenshot", out, out_size) ||
+		   folderGameArtPath(rom_path, NULL, out, out_size);
+}
+
+// The fitted List art's folder for a GAME_LIST_ART_* value (config.h; int-typed so utils.c stays free of config.h):
+// 1 Mix, 2 2D box art, 3 Wheel, 4 3D box art; NULL for the Screenshot (0) or anything else.
+static const char* listArtFolder(int art) {
+	switch (art) {
+	case 1:
+		return "mix";
+	case 2:
+		return "boxart2d";
+	case 3:
+		return "wheel";
+	case 4:
+		return "boxart";
+	default:
+		return NULL;
+	}
+}
+
+bool ROM_findListArt(const char* rom_path, int art, char* out, size_t out_size) {
+	const char* folder = listArtFolder(art);
+	if (folder) {
+		ROM_mediaArtVariantPath(rom_path, folder, out, out_size);
+		if (exists(out) || folderGameArtPath(rom_path, folder, out, out_size))
+			return true;
+		// Mix: an older library's mix (and a Port's picture) is the root .media/<name>.png
+		if (art == 1) {
+			ROM_mediaArtPath(rom_path, out, out_size);
+			if (exists(out) || folderGameArtPath(rom_path, NULL, out, out_size))
+				return true;
+		}
+	}
+	ROM_findScreenshot(rom_path, out, out_size);
+	return false;
 }
 
 bool M3U_findForRom(const char* rom_path, char* m3u_path, size_t m3u_size) {

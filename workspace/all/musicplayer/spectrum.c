@@ -12,6 +12,9 @@
 #define SPECTRUM_SETTINGS_FILE SHARED_USERDATA_PATH "/spectrum_settings.txt"
 
 #define SMOOTHING_FACTOR 0.7f
+// The owner refreshes its sample window once per audio period (~43 ms at the
+// default 2048 frames), so polling faster only repeats the same window.
+#define SPECTRUM_SAMPLE_MAX_AGE_MS 40
 #define PEAK_DECAY 0.97f
 #define MIN_DB -60.0f
 #define MAX_DB 0.0f
@@ -223,6 +226,10 @@ void Spectrum_update(void) {
 		spectrum_data.valid = true;
 		return;
 	}
+
+	// The 250 ms status poll held one sample window for ~15 frames, so the
+	// bars stepped at 4 Hz. Fetch each new window the owner produces instead.
+	MusicClient_updateWithin(SPECTRUM_SAMPLE_MAX_AGE_MS);
 
 	int samples = 0;
 	const MusicSnapshotWire* snapshot = MusicClient_snapshot();

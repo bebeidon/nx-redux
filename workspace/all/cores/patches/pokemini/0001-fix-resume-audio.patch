@@ -1,3 +1,4 @@
+# license: modifies PokeMini (https://github.com/libretro/PokeMini), GPL-3.0 (LICENSE); this patch is distributed under the same license.
 diff --git a/libretro/libretro.c b/libretro/libretro.c
 index 1f8b3c2b46a79372860c928a47a840b18cc60710..9e849f174c05e78c7808a63ad151db64ab4c3b87 100644
 --- a/libretro/libretro.c

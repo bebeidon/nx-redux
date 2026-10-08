@@ -124,11 +124,7 @@ static void wiz_render_empty(const char* title, const char* message) {
 }
 
 // Everything below is the managed-WiFi flow — pickers, association, hotspot
-// host/join — and it only exists on the HAS_WIFIMG platforms (tg5040/tg5050),
-// whose builds ship wifi_direct.c. Desktop has no managed WiFi stack: its
-// wiz_wifi_ensure_connected() (the #else arm at the bottom of this file)
-// reduces to "does this machine have a LAN address a peer could reach".
-#if defined(HAS_WIFIMG)
+// host/join — built on wifi_direct.c.
 
 //////////////////////////////////
 // WiFi helpers
@@ -350,7 +346,7 @@ int wiz_wifi_ensure_connected(WizSession* s) {
 		// one blocking call — so the read happens inline. The 4s cadence is kept.
 		if (!scanned || now - last_scan >= WIZ_SCAN_INTERVAL_MS) {
 			if (!scanned)
-				wiz_render_empty("Select WiFi Network", "Scanning for networks...");
+				wiz_render_empty("Netplay | Select WiFi Network", "Scanning for networks...");
 
 			count = WIFI_direct_scanNetworks(networks, WIZ_WIFI_MAX_NETWORKS);
 			last_scan = SDL_GetTicks();
@@ -440,9 +436,9 @@ int wiz_wifi_ensure_connected(WizSession* s) {
 
 		if (dirty) {
 			if (count > 0)
-				wiz_render_list("Select WiFi Network", labels, count);
+				wiz_render_list("Netplay | Select WiFi Network", labels, count);
 			else
-				wiz_render_empty("Select WiFi Network", "No networks found");
+				wiz_render_empty("Netplay | Select WiFi Network", "No networks found");
 			dirty = false;
 		} else {
 			UI_listViewTickIdle(&wiz_pick_view);
@@ -542,7 +538,7 @@ int wiz_hotspot_join(WizSession* s) {
 
 		if (!scanned || now - last_scan >= WIZ_SCAN_INTERVAL_MS) {
 			if (!scanned)
-				wiz_render_empty("Select code shown on the host", "Scanning for hosts...");
+				wiz_render_empty("Netplay | Pick Host Code", "Scanning for hosts...");
 
 			memset(hotspots, 0, sizeof(hotspots)); // scanForHotspots leaves the tail untouched
 			// Three scan passes live inside WIFI_direct_scanForHotspots (a hotspot
@@ -594,9 +590,9 @@ int wiz_hotspot_join(WizSession* s) {
 
 		if (dirty) {
 			if (count > 0)
-				wiz_render_list("Select code shown on the host", labels, count);
+				wiz_render_list("Netplay | Pick Host Code", labels, count);
 			else
-				wiz_render_empty("Select code shown on the host", "Waiting for a host...");
+				wiz_render_empty("Netplay | Pick Host Code", "Waiting for a host...");
 			dirty = false;
 		} else {
 			UI_listViewTickIdle(&wiz_pick_view);
@@ -647,23 +643,3 @@ int wiz_hotspot_join(WizSession* s) {
 
 	return 0;
 }
-
-#else // !HAS_WIFIMG — desktop
-
-// Desktop cannot (and must not) manage the machine's networks: no picker, no
-// association, nothing to record or restore. The only question the network
-// set-up step can answer here is whether this machine holds a LAN address a
-// peer could reach — Ethernet or WiFi, the rendezvous does not care. The
-// same real-interface test backs the host's advertised IP (wizard_net.c) and
-// Device Sync's discovery payload.
-int wiz_wifi_ensure_connected(WizSession* s) {
-	(void)s; // prev_ssid stays "" — cleanup has no association to restore
-
-	if (NET_getLanInfo(NULL, 0, NULL, 0) == 0)
-		return 0;
-
-	wiz_error("No network connection.\n\nConnect this computer to the\nsame network as the other player.");
-	return -1;
-}
-
-#endif // HAS_WIFIMG

@@ -94,64 +94,6 @@ the way in, matching a normal launch).
 
 ---
 
-## Desktop: one shared window for the whole frontend (single-process rewrite)
-
-**Recorded:** 2026-09-02 (user request), after the desktop overlays / frame-pacing /
-menu-ghost work landed.
-
-On desktop, launching a game or a tool opens a **new** OS window, and exiting it
-closes that window and returns to the nextui window. Cause: the desktop frontend is
-a **loop of separate processes**, each creating its own SDL window.
-`scripts/desktop/macos-entry.sh` (and the AppImage `AppRun`, via
-`scripts/desktop/entry-common.sh`) run `nextui.elf`; opening a ROM/tool makes nextui
-write the launch command to `/tmp/next` and **exit** (nextui.c:513-515, "shell
-script reads /tmp/next only after nextui.elf exits"); the loop `eval`s that command
-(minarch or a tool pak), and when it returns runs `nextui.elf` again. Each iteration
-is a fresh process → a fresh `SDL_CreateWindow` (`workspace/all/common/generic_video.c`
-~:619, at `SDL_WINDOWPOS_UNDEFINED`). On real hardware there is one framebuffer and
-no window manager, so this is invisible — it is purely a desktop artifact of
-mirroring the device boot chain.
-
-**Goal:** nextui / minarch / every tool share ONE persistent window for a session.
-
-**Hard constraint (why this is a rewrite, not a tweak):** a window cannot be shared
-across processes on macOS — the native handle (`NSWindow*`) is a pointer into one
-process's address space and can't be handed to another process.
-`SDL_CreateWindowFrom(nativeHandle)` only works cross-process on X11 (window IDs are
-X-server resources), so even that trick is Linux-only. The only portable path to a
-literal single window is to make the frontend **one process** that loads libretro
-cores in-process (dlopen the core + run `retro_run` in the same process/window, the
-way standalone RetroArch does) instead of exec'ing a separate `minarch.elf`.
-
-**Shape of the work (large):**
-- [ ] A single desktop host process owns the SDL window (created once) and the main
-      loop; the nextui menu runs inside it, and "open ROM" loads the core as a
-      library and runs the emulation loop in the same window instead of writing
-      `/tmp/next` + exiting.
-- [ ] Decide minarch's fate on desktop: compile its core-run/UI as a library the
-      host calls in-process, or fold its loop into the host. This is the bulk of the
-      effort — minarch and nextui are separate binaries with separate main loops,
-      config systems (ma_config.c vs nextui), input, and audio setup.
-- [ ] Tools (settings/scraper/ratools/extras/... — separate pak binaries): either
-      (a) accept that tools still open their own window (partial win; games are the
-      common case), or (b) also convert tools to in-process modules (much larger).
-      Recommend (a) first.
-- [ ] Retire the `/tmp/next` handoff + the `macos-entry.sh` / `AppRun` process loop
-      for the in-process paths; keep it only for anything still spawned.
-- [ ] Weigh the cost: this forks the desktop frontend structurally from the
-      device codebase (device stays multi-process, and must).
-
-**Cheaper alternative (do this if the rewrite isn't pursued):** persist window
-position so every process opens its window at the same spot (size is already fixed
-1024x768). Today it's created at `SDL_WINDOWPOS_UNDEFINED` (generic_video.c ~:619)
-so the OS places/cascades it; reading a saved position and saving on
-`SDL_WINDOWEVENT_MOVED` (desktop-gated) makes the window stay put across
-transitions. Still a brief close->open flash at each handoff, but no jumping — reads
-as one window in place. Low risk, desktop-only, covers nextui/minarch/all tools at
-once (all go through generic_video.c). ~90% of the feel for a fraction of the effort.
-
----
-
 ## Convert libretro cheats to DraStic (DS) format for the standalone emulator
 
 **Recorded:** 2026-09-17 (user request), as a follow-up to the Cheat Database feature
@@ -263,3 +205,141 @@ feature built first:
 [libretro-database NDS cht](https://github.com/libretro/libretro-database/tree/master/cht/Nintendo%20-%20Nintendo%20DS).
 
 ---
+
+## DC: per-game VMUs, and whether to move flycast to the libretro core
+
+**Requested:** 2026-09-28 (owner), while NX Redux Mobile added Dreamcast on the flycast **libretro** core with one
+VMU per game (`Saves/DC/<game>.A1.bin`, mirrored to the user's tree like any battery save).
+
+**Today on the handheld:** `DC.pak` runs **standalone** flycast. `launch.sh` sets `XDG_DATA_HOME="$USERDATA_DIR/data"`,
+so flycast keeps its memory cards (`vmu_save_A1.bin` …, one per port/slot, **shared by every game**), `dc_nvmem.bin`
+and save states in `.userdata/…/data/flycast/`, not in `Saves/DC/` (which `launch.sh` creates but flycast never
+uses). A shared card fills up with many games, and the user can't see or back it up with the other saves.
+
+**Per-game VMUs without changing emulator (recommended first):**
+- [ ] Check standalone flycast's per-game VMU option (believed `PerGameVmu` in `core/cfg/option.h`; confirm the key,
+      its section in `emu.cfg`, and the per-game file name it writes) and set it in `DC.pak`'s `default.cfg`
+      (tg5040 `default-smartpro.cfg` too).
+- [ ] Decide where per-game cards live: point them at `$SAVES_PATH/DC/` if flycast allows it, so they sit with the
+      other saves; otherwise leave them in the data dir.
+- [ ] Migration: existing shared `vmu_save_A1.bin` holds every game's saves. Keep it (don't delete) and document that
+      old saves stay on the shared card; optionally leave per-game off for users who already have one.
+- [ ] Netplay: the wizard's `--fetch-files "vmu_save_*.bin,dc_nvmem.bin"` and the host backup copy assume shared
+      cards; update the file globs for per-game cards.
+
+**Moving the handheld to the flycast libretro core (only if there is a reason beyond VMUs):** not needed for
+per-game VMUs. Standalone flycast was chosen for things the launcher builds on — the GGPO netplay wizard,
+RetroAchievements through flycast's own libcurl (with our CA-bundle patch), the NX overlay integration and the
+positional controller mapping files — which a libretro/minarch move would have to redo or drop, plus a
+performance check on the handheld GPU. Revisit only if the standalone build becomes a maintenance burden.
+
+**Performance check done — phase 0 spike, 2026-09-29 (branch `minarch-gpu-spike`): GO.** A minimal GPU
+(hardware-render) path in minarch runs flycast libretro v2.6 on the Brick at or above standalone speed with matched
+settings (Crazy Taxi 2 82–85 % vs 78–80 %, Soulcalibur fight 73–81 % vs 70–76 %, Metal Slug 6 100 %), and shaders,
+menu, save states and screenshots work. Open items (VMU, CPU-speed option, BIOS dir, GGPO loss): `.dev/spikes/minarch-gpu/RESULTS.md`.
+
+**Cross-device saves (later, optional):** even with per-game cards on both, standalone and libretro name the files
+differently (libretro per-content: `<content>.A1.bin`); moving a save between phone and handheld needs an agreed
+name or a small rename step.
+
+---
+
+## Credit Kenney for the button-hint glyphs
+
+**Requested:** 2026-09-29 (owner). The button-hint glyphs come from Kenney's **Input Prompts** pack (1.5A, CC0: credit
+is not required, but the owner wants to give it). Source pack: `~/Downloads/kenney_input-prompts_1.5/` on the owner's Mac.
+
+- [ ] Add a line to the `## Credits` section of `README.md`, e.g.
+      `- [Kenney](https://kenney.nl/assets/input-prompts) for the Input Prompts glyphs used in the button hints (CC0)`.
+- [ ] Add the same credit to the docs site page `nx-redux-docs/docs/reference/credits.md`.
+
+---
+
+## DC libretro vs standalone: performance figure for the PR and release notes
+
+**Requested:** 2026-09-29 (owner). The PR that moves `DC.pak` to minarch must state how much faster or slower the flycast
+libretro core runs than standalone flycast, **with Soulcalibur as the reference**. The figure goes into the release notes.
+
+Method, so the number holds up (the spike figures in `.dev/spikes/minarch-gpu/RESULTS.md` are not a like-for-like comparison):
+- [ ] Same build and settings as shipped: the libretro core with the pak's final `default.cfg` (Emulated sync,
+      auto-skip `some`, per-game VMU, …); standalone with its shipped `default-brick.cfg` / `default.cfg`. Same
+      BIOS mode on both. Smart Pro S fan on Auto.
+- [ ] Metric: emulation speed = core audio frames/s ÷ 44 100. Libretro via minarch's `[HWR]` line; standalone via the audio
+      probe in a *copy* of `DC.pak` (never replace the installed binary).
+- [ ] Scene: Soulcalibur's attract loop from the title screen onward. Average over ≥ 5 min per run, 3 runs per emulator
+      per device (Brick + Smart Pro S). Report the mean and range, then libretro ÷ standalone − 1 as the percentage.
+- [ ] Put the table plus one summary line per device in the PR description, e.g. "Soulcalibur runs N % faster on the
+      Brick (X % vs Y % of full speed)". Keep the raw windows in `RESULTS.md`.
+
+---
+
+## Music player: replace fdk-aac with FFmpeg's native AAC decoder (7.1+)
+
+**Decided:** 2026-10-07 (owner). `libfdk-aac.so` (fdk-aac v0.1.6, a TrimUI-SDK prebuilt in
+`workspace/all/musicplayer/include/fdk_aac/lib/`) is under the FDK-AAC license, which the FSF
+lists as GPL-incompatible, and `musicplayer.elf` + `musicplayerd.elf` (GPLv3) link it
+(`-lfdk-aac`, `workspace/all/musicplayer/Makefile`). A GPLv3 linking exception isn't an option:
+the binaries also link `common/` code from many other authors (MinUI, NextUI contributors).
+
+Replace it with a static, minimal libavcodec from **FFmpeg ≥ 7.1** (LGPL-2.1+, no
+`--enable-gpl`), float `aac` decoder (7.1 added xHE-AAC/USAC, float decoder only; the float
+decoder also has AArch64 NEON, `aac_fixed` doesn't).
+
+- [ ] Build script (toolchain image) for a minimal static FFmpeg 7.1+:
+      `--disable-everything --enable-decoder=aac --enable-decoder=aac_latm --enable-parser=aac
+      --enable-parser=aac_latm --disable-programs --enable-static --disable-shared`, sha256-pinned
+      tarball; build it in CI next to ffplay (could share the FFmpeg version with ffplay's build).
+- [ ] Port the four fdk call paths (~30 `aacDecoder_*` calls, `player.c` + `radio.c`):
+      `.m4a` via minimp4 (DSI → `extradata`, one `avcodec_send_packet` per MP4 sample), `.aac`
+      ADTS files, Icecast/ICY AAC/AAC+ streams, and HLS radio (our TS demux → ADTS). ADTS paths
+      need `av_parser_parse2` to split frames (fdk took arbitrary byte chunks via `Fill`).
+- [ ] Output is planar float (FLTP): add interleave + clamp to our s16 path. Seek =
+      `avcodec_flush_buffers`; take rate/channels from `frame->sample_rate`/`ch_layout`.
+- [ ] Check HE-AAC (implicit SBR) `.m4a`: today the rate comes from the stsd box, not the
+      decoder, which can be half the real output rate.
+- [ ] Device-test LC, HE-AAC v1/v2 radio ("aacp"), m4a seek, HLS rate changes; measure the
+      size of the two ELFs (estimate +0.5–0.9 MB each).
+- [ ] Remove `include/fdk_aac/` and the `libfdk-aac.so*` copy in the root `Makefile`, and
+      `licenses/fdk-aac.txt`.
+
+Fallback if this stalls: faad2 (GPL-2.0-or-later, API close to fdk's, no USAC).
+
+---
+
+## Files tool: replace NextCommander with our own copy of od-contrib/commander (MIT)
+
+**Decided:** 2026-10-07 (owner asked; recommendation recorded). The Files tool is
+`LoveRetro/NextCommander` (cloned `--depth 1`, unpinned, in `workspace/<plat>/Makefile`, plus
+`workspace/all/other/NextCommander.patch`). Nothing in its lineage has a license — LoveRetro ←
+OnionUI ← gcwnow ← the original DinguxCommander — so strictly it is all-rights-reserved and we
+can't redistribute it. Forking the *original* DinguxCommander doesn't help: it was published
+without a license too.
+
+`od-contrib/commander` (OD Commander, Gleb Mazovetskiy) forked DinguxCommander, rewrote most of
+the code, replaced all icons, and added an **MIT** `LICENSE.txt` (commit 6023665431: "The
+original code and icons were published without a license. Since then, most of the code has
+been rewritten and all of the icons have been replaced"). It supports SDL2 and has
+controller-button handling.
+
+**Copy, don't GitHub-fork (decided 2026-10-07):** make our own standalone repo (e.g.
+`nx-commander` under the owner's account) — `git clone` od-contrib/commander and push it to a new
+empty repo, so the history comes along but the repo is **outside their fork network**. A
+GitHub "Fork" survives the owner deleting or privatising their repo, but a DMCA notice that
+claims the whole fork network can take every fork down at once; a standalone copy is only hit if
+it is named itself. The MIT grant we received can't be revoked either way. The remaining risk is
+a claim by the original DinguxCommander author over leftover unlicensed code — that hits any copy
+that is named, so the more of it we rewrite, the smaller it gets.
+
+- [ ] Create the standalone repo from od-contrib/commander; keep its MIT `LICENSE.txt` and
+      copyright line, and say in its README it is based on od-contrib/commander (Gleb Mazovetskiy).
+- [ ] Port what NextCommander adds for us (diff NextCommander against its DinguxCommander base +
+      our `NextCommander.patch`: SDL2/TrimUI input, NextUI theming/fonts, screen size) as commits
+      in our repo.
+- [ ] Build from **our** repo at a pinned full commit hash, never from upstream (swap the
+      unpinned `--depth 1` clone in `workspace/<plat>/Makefile`, and the copy in
+      `workspace/<plat>/platform/Makefile.copy`); keep `Files.pak` paths/behaviour unchanged.
+      Optionally attach its source tarball to each GitHub release so shipped code always has its
+      source beside it.
+- [ ] Replace `licenses/nextcommander.txt` with the OD Commander MIT text; update the README
+      credit line (`skeleton/BASE/README.txt`, "Licenses and credits").
+- [ ] Device-test on Brick + Smart Pro S (browse, copy/move, text/image viewer, keyboard).

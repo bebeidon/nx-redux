@@ -1,3 +1,4 @@
+# license: modifies SDL_drastic (SDL2) (https://github.com/trngaje/SDL_drastic), zlib (LICENSE.txt); this patch is distributed under the same license.
 diff -ruN --exclude=.git --exclude=build --exclude=*.o --exclude=*.a --exclude=*.la --exclude=*.lo --exclude=*.orig --exclude=Makefile --exclude=Makefile.rules --exclude=config.log --exclude=config.status --exclude=libtool --exclude=sdl2-config --exclude=sdl2-config.cmake --exclude=sdl2-config-version.cmake --exclude=sdl2.pc --exclude=SDL2.spec --exclude=gen --exclude=autom4te.cache --exclude=SDL_config.h --exclude=SDL_revision.h a/src/core/linux/SDL_evdev_capabilities.c b/src/core/linux/SDL_evdev_capabilities.c
 --- a/src/core/linux/SDL_evdev_capabilities.c	2026-09-16 01:55:14
 +++ b/src/core/linux/SDL_evdev_capabilities.c	2026-09-15 11:19:05

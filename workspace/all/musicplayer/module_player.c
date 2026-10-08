@@ -118,7 +118,7 @@ static bool sync_owner_presentation(const MusicSnapshotWire* snapshot) {
 		changed = true;
 	}
 	if (Settings_getLyricsEnabled())
-		Lyrics_fetch(snapshot->artist, snapshot->title, snapshot->duration_ms / 1000);
+		Lyrics_fetch(snapshot->current_file, snapshot->artist, snapshot->title, snapshot->duration_ms / 1000);
 	return changed;
 }
 
@@ -445,30 +445,22 @@ static bool handle_browser_input(PlayerInternalState* state, bool* dirty) {
 
 // Handle input in playing state. Returns true when main loop should continue (skip render).
 static bool handle_playing_input(SDL_Surface* screen, PlayerInternalState* state, bool* dirty) {
-	// Handle screen off hint timeout
-	if (ModuleCommon_isScreenOffHintActive()) {
+	// Screen off hint or screen off: A still toggles play/pause
+	if (screen_off || ModuleCommon_isScreenOffHintActive()) {
+		// (the waking frame ends here so its A press doesn't also toggle)
+		DarkScreenAction action = ModuleCommon_handleDarkScreenInput(screen, &screen_off);
+		if (action == DARK_SCREEN_WAKE)
+			*dirty = 1;
+		else if (action == DARK_SCREEN_TOGGLE)
+			MusicClient_toggle();
 		if (ModuleCommon_processScreenOffHintTimeout()) {
 			screen_off = true;
 			GFX_clear(screen);
 			GFX_flip(screen);
 		}
 		MusicClient_update();
-		GFX_sync();
-		return true;
-	}
-
-	// Handle screen off mode
-	if (screen_off) {
-		// Wake screen with SELECT+A
-		if (PAD_isPressed(BTN_SELECT) && PAD_isPressed(BTN_A)) {
-			screen_off = false;
-			PLAT_enableBacklight(1);
-			ModuleCommon_recordInputTime();
-			*dirty = 1;
-		}
-		MusicClient_update();
-		ModuleCommon_setAutosleepDisabled(Background_isPlaying());
-
+		if (screen_off)
+			ModuleCommon_setAutosleepDisabled(Background_isPlaying());
 		GFX_sync();
 		return true;
 	}
@@ -518,7 +510,7 @@ static bool handle_playing_input(SDL_Surface* screen, PlayerInternalState* state
 		} else {
 			// Re-fetch lyrics from copied daemon metadata.
 			const MusicSnapshotWire* snapshot = MusicClient_snapshot();
-			Lyrics_fetch(snapshot->artist, snapshot->title, snapshot->duration_ms / 1000);
+			Lyrics_fetch(snapshot->current_file, snapshot->artist, snapshot->title, snapshot->duration_ms / 1000);
 		}
 		*dirty = 1;
 	} else if (PAD_tappedSelect(SDL_GetTicks())) {
@@ -879,29 +871,22 @@ ModuleExitReason PlayerModule_runWithPlaylist(SDL_Surface* screen,
 			}
 		}
 
-		// Handle screen off hint timeout
-		if (ModuleCommon_isScreenOffHintActive()) {
+		// Screen off hint or screen off: A still toggles play/pause
+		if (screen_off || ModuleCommon_isScreenOffHintActive()) {
+			// (the waking frame ends here so its A press doesn't also toggle)
+			DarkScreenAction action = ModuleCommon_handleDarkScreenInput(screen, &screen_off);
+			if (action == DARK_SCREEN_WAKE)
+				dirty = 1;
+			else if (action == DARK_SCREEN_TOGGLE)
+				MusicClient_toggle();
 			if (ModuleCommon_processScreenOffHintTimeout()) {
 				screen_off = true;
 				GFX_clear(screen);
 				GFX_flip(screen);
 			}
 			MusicClient_update();
-			GFX_sync();
-			continue;
-		}
-
-		// Handle screen off mode
-		if (screen_off) {
-			if (PAD_isPressed(BTN_SELECT) && PAD_isPressed(BTN_A)) {
-				screen_off = false;
-				PLAT_enableBacklight(1);
-				ModuleCommon_recordInputTime();
-				dirty = 1;
-			}
-			MusicClient_update();
-			ModuleCommon_setAutosleepDisabled(Background_isPlaying());
-
+			if (screen_off)
+				ModuleCommon_setAutosleepDisabled(Background_isPlaying());
 			GFX_sync();
 			continue;
 		}
@@ -948,7 +933,7 @@ ModuleExitReason PlayerModule_runWithPlaylist(SDL_Surface* screen,
 				Lyrics_clear();
 			} else {
 				const MusicSnapshotWire* snapshot = MusicClient_snapshot();
-				Lyrics_fetch(snapshot->artist, snapshot->title, snapshot->duration_ms / 1000);
+				Lyrics_fetch(snapshot->current_file, snapshot->artist, snapshot->title, snapshot->duration_ms / 1000);
 			}
 			dirty = 1;
 		} else if (PAD_tappedSelect(SDL_GetTicks())) {

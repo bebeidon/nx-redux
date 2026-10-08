@@ -1,3 +1,4 @@
+# license: modifies mupen64plus-ui-console (https://github.com/mupen64plus/mupen64plus-ui-console), GPL-2.0 (LICENSES); this patch is distributed under the same license.
 diff --git a/src/main.c b/src/main.c
 index 678fa1c..03289a3 100644
 --- a/src/main.c

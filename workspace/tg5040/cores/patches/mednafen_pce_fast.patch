@@ -1,3 +1,4 @@
+# license: modifies Beetle PCE Fast (https://github.com/libretro/beetle-pce-fast-libretro), GPL-2.0 (COPYING); this patch is distributed under the same license.
 diff --git forkSrcPrefix/Makefile forkDstPrefix/Makefile
 index 5b54403d915e46cb0df8f428355665fbe26e05b4..f72733d9689aa78795ce8b9d777b0ab9fcc5b65e 100644
 --- forkSrcPrefix/Makefile

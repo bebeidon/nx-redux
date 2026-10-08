@@ -1,10 +1,11 @@
 # NX Redux
 
-Custom firmware for retro handheld gaming devices. It keeps the minimal,
-distraction-free interface — pick up, pick a game, play — while deliberately extending
-what sits underneath: standalone emulators, netplay, achievements, media tools and more.
-Those extras stay out of the way until you ask for them, tucked into the Tools and pause
-menus (and hidden entirely in simple mode).
+Custom firmware for TrimUI retro handhelds. NX Redux is a clean, pick-up-and-play way
+to play retro games: pick up, pick a game, play. Home keeps your last game, this
+month's play and your pinned favourites one press away, and you can switch any of it
+off, down to a five-game screen. Underneath, standalone emulators, netplay,
+achievements, media tools and more wait in the Tools tab and pause menus until you
+ask for them.
 
 NX Redux is a fork of [NextUI](https://github.com/LoveRetro/NextUI) by LoveRetro, which itself descends from [MinUI](https://github.com/shauninman/MinUI).
 
@@ -38,8 +39,8 @@ Core experience:
 - Redesigned UI with consistent styling across the system, slide transitions, scroll indicators, progress overlays and confirmation dialogs.
 - `Settings` rewritten in C, with the former `LED Control`, `Input`, `Clock` and `Updater` apps merged into it — [Settings reference](https://nxredux.com/settings/).
 - [Game Switcher](https://nxredux.com/guide/game-switcher/) lists only resumable games by default, with art fallback and an auto-save on quit so every game resumes where you left it.
-- Main menu [shortcuts](https://nxredux.com/guide/main-menu/) for frequently used tools and games, optional hiding of the emulator folders, and `START` to [search](https://nxredux.com/guide/main-menu/).
-- A [game context menu](https://nxredux.com/guide/context-menu/): collections, pin to main menu, rename, delete, remove from recents, refresh, per-game emulator options.
+- A tabbed [main menu](https://nxredux.com/guide/main-menu/) — Home, Consoles, Collections and Tools — where Home shows your last game, play stats and pinned games and tools; each tab can be drawn as a list, grid or carousel, game lists add a Backdrop style ([Menu Layouts](https://nxredux.com/handheld/guide/layouts/)), and `START` opens [search](https://nxredux.com/handheld/guide/main-menu/#search).
+- A [game context menu](https://nxredux.com/guide/context-menu/): collections, pin to Home, rename, delete, remove from recents, refresh, per-game emulator options.
 - [Simple Mode](https://nxredux.com/guide/simple-mode/) — a PIN-protected, distraction-free menu for children or casual users.
 
 Available when you want it (Tools, pause menu and OSD):
@@ -87,8 +88,6 @@ NX Redux is developed with the help of [Claude](https://claude.ai), Anthropic's 
 - [carroarmato0](https://github.com/carroarmato0) for the [minarch modularization](https://github.com/LoveRetro/NextUI/pull/721) that the `ma_*` split here is based on
 - [sinedied](https://github.com/sinedied/perfect-retroshaders) for the shaders that were originally proposed for NextUI in [LoveRetro/NextUI#796](https://github.com/LoveRetro/NextUI/pull/796).
 - [KrutzOtrem](https://github.com/KrutzOtrem/Trimui-Brick-Overlays) for the overlays
-- [timbueno](https://github.com/timbueno/ArtBookNextUI.theme) for the Artbook theme
-- [anthonycaccese](https://github.com/anthonycaccese/art-book-next-es.git) for the Artbook artwork
 - [ben16w](https://github.com/ben16w/minui-portmaster) for the Minui-Portmaster
 
 ## License

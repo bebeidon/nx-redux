@@ -32,9 +32,36 @@ export PYSDL2_DLL_PATH="/usr/trimui/lib"
 export HOME="$SHARED_USERDATA_PATH/PORTS-portmaster"
 # Copy audio config so ALSA finds Bluetooth/USB DAC routing (audiomon writes to USERDATA_PATH)
 [ -f "$USERDATA_PATH/.asoundrc" ] && cp "$USERDATA_PATH/.asoundrc" "$HOME/.asoundrc"
-# Point XDG_DATA_HOME to PortMaster's parent so port scripts find it directly
-# (port scripts check: elif [ -d "$XDG_DATA_HOME/PortMaster/" ])
-export XDG_DATA_HOME="$SDCARD_PATH/Emus/shared"
+# The standard XDG data home, as on other PortMaster platforms: games inherit it
+# and keep their data under ~/.local/share/<game>, which is where port scripts
+# bind_directories their save/config folders. Port scripts find PortMaster via
+# their fallback path, rewritten to $EMU_DIR before launch (see main).
+export XDG_DATA_HOME="$HOME/.local/share"
+# Port scripts take $XDG_DATA_HOME/PortMaster over their fallback whenever
+# that directory exists, so a stray one (some cards carry an empty leftover)
+# hides the real install and the port dies sourcing control.txt. Remove it
+# when empty; a non-empty one without control.txt is left alone and logged.
+if [ -d "$XDG_DATA_HOME/PortMaster" ] && [ ! -f "$XDG_DATA_HOME/PortMaster/control.txt" ]; then
+    rmdir "$XDG_DATA_HOME/PortMaster" 2>/dev/null \
+        || echo "warning: $XDG_DATA_HOME/PortMaster has no control.txt; port scripts will use it over $EMU_DIR"
+fi
+
+# PortMaster's install (Xtras) and its self-update put back the stock control.txt, whose paths point at
+# /roms/ports/PortMaster: a port then can't load device_info.txt and dies ("Game files are not installed
+# correctly"), and the stock device_info.txt, which no longer recognises TrimUI. The PortMaster tool re-applies the
+# NxRedux patches each time it opens, so a port launched before the tool's next run used the stock files; apply
+# them here too (the tool's launch.sh keeps the one copy of every patch). Checked by each file's newest NX Redux
+# marker, so a card patched by an older build is refreshed too; device_info.txt only when it has the
+# 2026.09.19+ probe's capability line the patches anchor on. Only a tool with --patch-only is called: an older
+# one would ignore the flag and open the PortMaster GUI.
+PM_TOOL="$SDCARD_PATH/Tools/PortMaster.pak/launch.sh"
+DI="$EMU_DIR/device_info.txt"
+if { { [ -f "$EMU_DIR/control.txt" ] && ! grep -q 'NX Redux: exFAT/FAT32 compat' "$EMU_DIR/control.txt"; } \
+     || { grep -q '^export DEVICE_CAPABILITIES=' "$DI" 2>/dev/null && ! grep -q 'NX Redux: TrimUI capability' "$DI"; }; } \
+    && [ -f "$PM_TOOL" ] && grep -q -- '--patch-only' "$PM_TOOL"; then
+    echo "PortMaster files are unpatched: applying the NxRedux patches"
+    sh "$PM_TOOL" --patch-only
+fi
 
 [ -z "$1" ] && exit 1
 ROM_PATH="$1"
@@ -55,11 +82,39 @@ cleanup() {
     killall show2.elf 2>/dev/null || true
     kill $SYNC_PID 2>/dev/null || true
 
+    # Mounts the port left under HOME or the ports dir (bind_directories,
+    # control.txt's ln fallback, runtime squashfs), deepest first. Left mounted, the next run's
+    # `rm -rf ~/.config/<game>` would empty the save folder through them.
+    awk -v h="$HOME/" -v t="$TEMP_DATA_DIR/ports/" '
+        { gsub(/\\040/, " ", $2) }
+        index($2, h) == 1 || index($2, t) == 1 { print $2 }
+    ' /proc/mounts 2>/dev/null | sort -r | while IFS= read -r m; do
+        umount "$m" 2>/dev/null || umount -l "$m" 2>/dev/null
+    done
+
     umount "$TEMP_DATA_DIR/ports" 2>/dev/null || umount -l "$TEMP_DATA_DIR/ports" 2>/dev/null || true
     # Use rmdir (not rm -rf) so a still-mounted bind mount can't delete .ports game data
     rmdir "$TEMP_DATA_DIR/ports" 2>/dev/null
     rmdir "$TEMP_DATA_DIR" 2>/dev/null
     rm -f "$HOME/.asoundrc" 2>/dev/null
+    # The audio routing bound over /etc/asound.conf in main()
+    umount "$NX_ASOUND_DEST" 2>/dev/null
+    rm -f "$NX_ASOUND"
+}
+
+# ALSA reads ~/.asoundrc, and some ports move HOME into their game folder
+# (every NextOS port, a few official ones), which lost the Bluetooth/USB DAC
+# routing and the Game Volume control. ALSA_CONFIG_PATH can't add it (this
+# alsa-lib, 1.1.8, ignores definitions in extra files listed there), but
+# /etc/asound.conf is always read: for the port session, bind a copy with the
+# routing appended over it. cleanup() unmounts it; a reboot drops it too.
+NX_ASOUND="/tmp/nx_ports_asound.conf"
+NX_ASOUND_DEST="/etc/asound.conf"
+bind_audio_routing() {
+    [ -f "$HOME/.asoundrc" ] && [ -f "$NX_ASOUND_DEST" ] || return 0
+    umount "$NX_ASOUND_DEST" 2>/dev/null
+    cat "$NX_ASOUND_DEST" "$HOME/.asoundrc" > "$NX_ASOUND" \
+        && mount --bind "$NX_ASOUND" "$NX_ASOUND_DEST"
 }
 
 set_controller_layout() {
@@ -93,9 +148,33 @@ set_controller_layout() {
     esac
 }
 
+# Ports on PortMaster's Weston runtime (weston_pkg) need udev to label input
+# devices (ID_INPUT): libinput skips unlabelled devices and Weston exits with no
+# input, so the game gets no X display (black screen, "GLFW library is not
+# initialized"). The stock firmware's udev ships no input_id rule, so add one in
+# udev's runtime rules dir (RAM, gone at reboot) and re-scan the input devices.
+# Once per boot; virtual pads gptokeyb creates later are labelled by the rule.
+add_input_udev_rule() {
+    command -v udevadm >/dev/null 2>&1 || return 0
+    for d in /run/udev /tmp/run/udev; do
+        [ -d "$d/data" ] || continue
+        [ -f "$d/rules.d/60-nx-input-id.rules" ] && return 0
+        mkdir -p "$d/rules.d" || return 0
+        printf '%s\n' \
+            'ACTION=="remove", GOTO="nx_input_id_end"' \
+            'SUBSYSTEM=="input", ENV{ID_INPUT}=="", IMPORT{builtin}="input_id"' \
+            'LABEL="nx_input_id_end"' >"$d/rules.d/60-nx-input-id.rules"
+        udevadm control --reload 2>/dev/null
+        udevadm trigger --action=add --subsystem-match=input 2>/dev/null
+        udevadm settle -t 3 2>/dev/null
+        return 0
+    done
+}
+
 main() {
     echo "1" >/tmp/stay_awake
     trap "cleanup" EXIT INT TERM HUP QUIT
+    bind_audio_routing
 
     # Bring all cores online for multi-threaded ports
     for i in 2 3 5 6 7; do
@@ -126,13 +205,19 @@ main() {
     fi
 
     # Fix hardcoded paths and shebangs
+    # /roms/ports/<dir> (other firmwares' ports folder, which some third-party
+    # wrappers look in for their game folder) -> the .ports bind mount above.
     sed -i -e "s|/roms/ports/PortMaster|$EMU_DIR|g" \
+           -e "s|/roms/ports/|$TEMP_DATA_DIR/ports/|g" \
+           -e "s|/mnt/SDCARD/Emus/tg50[45]0/PORTS.pak/PortMaster|$EMU_DIR|g" \
            -e '1s|^#!/bin/bash|#!/usr/bin/env bash|' "$ROM_PATH"
 
     # Apply the global button layout (Settings > System > Button layout).
     # Replaces the old per-runtime xbox_layout marker; the marker is ignored.
     . "$SYSTEM_PATH/bin/nx_button_layout.sh"
     set_controller_layout "$NX_BUTTON_LAYOUT"
+
+    add_input_udev_rule
 
     # Start power button sleep/poweroff handler
     sleepmon.elf &

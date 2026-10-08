@@ -1,6 +1,7 @@
 #include "ui_pindialog.h"
 #include "ui_draw.h"
 #include "ui_menubar.h"
+#include "ui_list.h"
 #include "ui_buttonhintbar.h"
 #include "api.h"
 #include "defines.h"
@@ -67,7 +68,11 @@ void PinDialog_render(SDL_Surface* screen) {
 	int gap = SCALE1(BUTTON_MARGIN * 2);
 	int total_w = PINDIALOG_PIN_LEN * slot_w + (PINDIALOG_PIN_LEN - 1) * gap;
 	int x = (screen->w - total_w) / 2;
-	int y = (screen->h - slot_h) / 2 - SCALE1(BUTTON_SIZE);
+	// the slots (their spinner arrows sit symmetrically above and below) centred between the title's letters
+	// and the hint icons (LIST-LAYOUT §10.2's optical centre), not the screen
+	int band_top = UI_pageTitleBandTop();
+	int band_bottom = UI_buttonHintIconTop(screen->h);
+	int y = band_top + (band_bottom - band_top - slot_h) / 2;
 
 	for (int i = 0; i < PINDIALOG_PIN_LEN; i++) {
 		int focused = (i == pin_focus);
@@ -87,10 +92,12 @@ void PinDialog_render(SDL_Surface* screen) {
 			SDL_Rect arrow;
 			GFX_assetRect(ASSET_SCROLL_UP, &arrow);
 			int ax = x + (slot_w - arrow.w) / 2;
-			GFX_blitAsset(ASSET_SCROLL_UP, NULL, screen,
-						  &(SDL_Rect){ax, y - SCALE1(BUTTON_MARGIN) - arrow.h, 0, 0});
-			GFX_blitAsset(ASSET_SCROLL_DOWN, NULL, screen,
-						  &(SDL_Rect){ax, y + slot_h + SCALE1(BUTTON_MARGIN), 0, 0});
+			SDL_Surface* up = UI_scrollArrow(true);
+			SDL_Surface* down = UI_scrollArrow(false);
+			if (up)
+				SDL_BlitSurface(up, NULL, screen, &(SDL_Rect){ax, y - SCALE1(BUTTON_MARGIN) - arrow.h, 0, 0});
+			if (down)
+				SDL_BlitSurface(down, NULL, screen, &(SDL_Rect){ax, y + slot_h + SCALE1(BUTTON_MARGIN), 0, 0});
 		} else {
 			// dot instead of the digit so an onlooker can't read the code
 			int dot = SCALE1(8);

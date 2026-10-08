@@ -30,7 +30,7 @@
 
 int is_brick = 0;
 int is_brickpro = 0;
-int ui_scale = 0;
+float ui_scale = 0;
 void PLAT_initPlatform(void) {
 	// TODO: replace with something that doesnt bleed out of tg5040 scope
 	char* device = getenv("DEVICE");
@@ -629,6 +629,10 @@ void PLAT_initLeds(LightSettings* lights) {
 					continue;
 				}
 				if (sscanf(line, "effect=%d", &temp_value) == 1) {
+					// Older builds offered effects the driver never had; those
+					// left the zone dark, so fall back to Static.
+					if (temp_value > LED_EFFECT_MAX)
+						temp_value = LED_EFFECT_STATIC;
 					lights[current_light].effect = temp_value;
 					continue;
 				}

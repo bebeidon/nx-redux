@@ -8,6 +8,13 @@
 #include "ma_audio.h"
 #include "ma_environment.h"
 #include "ma_rewind.h"
+#include "ma_hwrender.h"
+#include "ma_avinfo.h"
+#include "ma_emutime.h"
+#include "ma_runframe.h"
+#include "core_netplay.h"
+#include "ma_menu.h"
+#include <msettings.h>
 #include <dlfcn.h>
 #include <libgen.h>
 
@@ -26,8 +33,33 @@ static void Core_getName(char* in_name, char* out_name, size_t out_size) {
 // lazily when this frame has not been polled yet.
 static void (*core_run_real)(void);
 static void core_run_wrapped(void) {
+	HWR_beforeRun();
 	Input_beginFrame();
 	core_run_real();
+}
+
+// GPU cores may touch GL in any entry point, not only retro_run, and the
+// in-game menu leaves SDL's renderer context current: make the game context
+// current first. No-ops for software cores.
+static void (*core_reset_real)(void);
+static void core_reset_wrapped(void) {
+	HWR_makeCurrent();
+	core_reset_real();
+}
+static size_t (*core_serialize_size_real)(void);
+static size_t core_serialize_size_wrapped(void) {
+	HWR_makeCurrent(); // PPSSPP flushes its GL queue when it pauses its emu thread to measure
+	return core_serialize_size_real();
+}
+static bool (*core_serialize_real)(void* data, size_t size);
+static bool core_serialize_wrapped(void* data, size_t size) {
+	HWR_makeCurrent();
+	return core_serialize_real(data, size);
+}
+static bool (*core_unserialize_real)(const void* data, size_t size);
+static bool core_unserialize_wrapped(const void* data, size_t size) {
+	HWR_makeCurrent();
+	return core_unserialize_real(data, size);
 }
 void Core_open(const char* core_path, const char* tag_name) {
 	core.handle = dlopen(core_path, RTLD_LAZY);
@@ -44,12 +76,16 @@ void Core_open(const char* core_path, const char* tag_name) {
 	core.get_system_info = dlsym(core.handle, "retro_get_system_info");
 	core.get_system_av_info = dlsym(core.handle, "retro_get_system_av_info");
 	core.set_controller_port_device = dlsym(core.handle, "retro_set_controller_port_device");
-	core.reset = dlsym(core.handle, "retro_reset");
+	core_reset_real = dlsym(core.handle, "retro_reset");
+	core.reset = core_reset_real ? core_reset_wrapped : NULL;
 	core_run_real = dlsym(core.handle, "retro_run");
 	core.run = core_run_wrapped;
-	core.serialize_size = dlsym(core.handle, "retro_serialize_size");
-	core.serialize = dlsym(core.handle, "retro_serialize");
-	core.unserialize = dlsym(core.handle, "retro_unserialize");
+	core_serialize_size_real = dlsym(core.handle, "retro_serialize_size");
+	core.serialize_size = core_serialize_size_real ? core_serialize_size_wrapped : NULL;
+	core_serialize_real = dlsym(core.handle, "retro_serialize");
+	core.serialize = core_serialize_real ? core_serialize_wrapped : NULL;
+	core_unserialize_real = dlsym(core.handle, "retro_unserialize");
+	core.unserialize = core_unserialize_real ? core_unserialize_wrapped : NULL;
 	core.cheat_reset = dlsym(core.handle, "retro_cheat_reset");
 	core.cheat_set = dlsym(core.handle, "retro_cheat_set");
 	core.load_game = dlsym(core.handle, "retro_load_game");
@@ -98,7 +134,16 @@ void Core_open(const char* core_path, const char* tag_name) {
 		else
 			sprintf((char*)core.saves_dir, "%s/Saves/%s", SDCARD_PATH, core.tag);
 	}
-	sprintf((char*)core.bios_dir, "%s/Bios/%s", SDCARD_PATH, core.tag);
+	// Same for the core's system files (flycast keeps its console flash and the
+	// shared second memory card beside the BIOS): NETPLAY_SYSTEM_DIR is an
+	// isolated copy holding the host's files and the BIOS the session uses.
+	{
+		const char* netplay_system = getenv("NETPLAY_SYSTEM_DIR");
+		if (netplay_system && netplay_system[0])
+			snprintf((char*)core.bios_dir, sizeof(core.bios_dir), "%s", netplay_system);
+		else
+			sprintf((char*)core.bios_dir, "%s/Bios/%s", SDCARD_PATH, core.tag);
+	}
 	sprintf((char*)core.cheats_dir, "%s/Cheats/%s", SDCARD_PATH, core.tag);
 	sprintf((char*)core.overlays_dir, "%s/Overlays/%s", SDCARD_PATH, core.tag);
 
@@ -161,6 +206,53 @@ int Core_updateAVInfo(void) {
 	return changed;
 }
 
+// GPU cores report timing and aspect changes mid-game (SET_SYSTEM_AV_INFO /
+// SET_GEOMETRY) from inside retro_run. Audio re-init and re-scaling cannot run
+// there, so the environment callback stores them and the main loop applies
+// them once retro_run has returned.
+static struct {
+	int has_av;
+	int has_geometry;
+	struct retro_system_av_info av;
+	struct retro_game_geometry geometry;
+} pending_av;
+
+void Core_setPendingAVInfo(const struct retro_system_av_info* av) {
+	pending_av.av = *av;
+	pending_av.has_av = 1;
+}
+void Core_setPendingGeometry(const struct retro_game_geometry* geometry) {
+	pending_av.geometry = *geometry;
+	pending_av.has_geometry = 1;
+}
+void Core_applyPendingAV(void) {
+	if (!pending_av.has_av && !pending_av.has_geometry)
+		return;
+	AVState cur = {core.fps, core.sample_rate, core.aspect_ratio};
+	int changes = 0;
+	if (pending_av.has_av)
+		changes |= AVInfo_classifyTiming(&cur, &pending_av.av);
+	if (pending_av.has_geometry)
+		changes |= AVInfo_classifyGeometry(&cur, &pending_av.geometry);
+	if (changes & AV_CHANGE_AUDIO) {
+		core.fps = pending_av.av.timing.fps;
+		core.sample_rate = pending_av.av.timing.sample_rate;
+		SND_resetAudio(core.sample_rate, core.fps);
+		SetVolume(GetVolume());
+		chooseSyncRef();
+	}
+	if (changes & AV_CHANGE_ASPECT) {
+		// SET_GEOMETRY is the more recent, narrower update when both arrived
+		core.aspect_ratio = pending_av.has_geometry ? AVInfo_aspect(&pending_av.geometry)
+													: AVInfo_aspect(&pending_av.av.geometry);
+		renderer.dst_p = 0; // re-run the scaler on the next frame
+	}
+	if (changes)
+		LOG_info("[AV] fps=%.3f rate=%.0f aspect=%.4f\n", core.fps, core.sample_rate, core.aspect_ratio);
+	pending_av.has_av = 0;
+	pending_av.has_geometry = 0;
+}
+
 void Core_load(void) {
 	core.has_netpacket = false;
 
@@ -171,7 +263,22 @@ void Core_load(void) {
 	if (!core.load_game(&game_info)) {
 		// running a core with no loaded game is a guaranteed crash inside the core
 		LOG_error("core refused to load game: %s\n", game_info.path);
+		if (CoreNetplay_isActive()) // the core gave up waiting for the peer
+			Menu_netplayNotice("Netplay failed", "Couldn't connect to the other player.", 3000);
 		exit(EXIT_FAILURE);
+	}
+	{
+		// GPU cores: the context must be live before the first retro_run and
+		// before State_resume loads a state into the core's renderer.
+		struct retro_system_av_info av = {0};
+		core.get_system_av_info(&av);
+		HWR_contextReset(av.geometry.max_width, av.geometry.max_height);
+		if (HWR_contextFailed()) {
+			// the core was promised a GL context it will never get: its GL
+			// calls would fail and its frames are not pixel data
+			LOG_error("GPU core context could not be started: %s\n", game_info.path);
+			exit(EXIT_FAILURE);
+		}
 	}
 
 	if (Cheats_load())
@@ -185,6 +292,7 @@ void Core_load(void) {
 }
 void Core_reset(void) {
 	core.reset();
+	EmuTime_reset();
 	// the undo snapshot belongs to the abandoned pre-reset session
 	State_invalidateUndo();
 	Rewind_on_state_change();
@@ -200,6 +308,11 @@ void Core_quit(void) {
 		SRAM_write();
 		Cheats_free();
 		RTC_write();
+		HWR_makeCurrent();
+		// Destroy the hw context BEFORE unloading, as RetroArch does: PPSSPP frees the
+		// object its context_destroy callback dereferences in retro_unload_game, so the
+		// reverse order crashed (SIGSEGV) on every quit.
+		HWR_contextDestroy();
 		core.unload_game();
 		core.deinit();
 		core.initialized = 0;

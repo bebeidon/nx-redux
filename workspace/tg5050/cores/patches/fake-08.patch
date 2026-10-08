@@ -1,3 +1,4 @@
+# license: modifies fake-08 (https://github.com/jtothebell/fake-08), MIT (LICENSE.MD); this patch is distributed under the same license.
 diff --git forkSrcPrefix/platform/libretro/Makefile forkDstPrefix/platform/libretro/Makefile
 index be0f1b46bb3ab10be4a9f896f5e8841dd630b35b..f6b4d892627ec2a81b01ddb4da7f0c7a8022221f 100644
 --- forkSrcPrefix/platform/libretro/Makefile

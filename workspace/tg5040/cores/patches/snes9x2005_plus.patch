@@ -1,3 +1,4 @@
+# license: modifies Snes9x 2005 (https://github.com/libretro/snes9x2005), Snes9x license (copyright); this patch is distributed under the same license.
 diff --git forkSrcPrefix/Makefile forkDstPrefix/Makefile
 index 07d5368a8e78a020813732239ec369d83e931ede..009f13b8e61c634de4cb83e97785a10b83b4322d 100644
 --- forkSrcPrefix/Makefile

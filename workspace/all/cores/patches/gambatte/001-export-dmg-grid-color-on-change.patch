@@ -1,3 +1,4 @@
+# license: modifies Gambatte (https://github.com/libretro/gambatte-libretro), GPL-2.0 (COPYING); this patch is distributed under the same license.
 diff --git forkSrcPrefix/libgambatte/libretro/libretro.cpp forkDstPrefix/libgambatte/libretro/libretro.cpp
 index 74b2b1dd0bb3f76b77a616ebac2485ba09565467..caa2d1ef21235ffb09ad22440266495d99d9be4e 100644
 --- forkSrcPrefix/libgambatte/libretro/libretro.cpp

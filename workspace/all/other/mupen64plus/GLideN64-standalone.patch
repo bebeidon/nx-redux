@@ -1,3 +1,4 @@
+# license: modifies GLideN64 (https://github.com/gonetz/GLideN64), GPL-2.0 (LICENSE); this patch is distributed under the same license.
 diff --git a/SETTINGS.md b/SETTINGS.md
 new file mode 100644
 index 00000000..82791025

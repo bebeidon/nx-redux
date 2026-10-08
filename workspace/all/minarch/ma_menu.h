@@ -22,6 +22,9 @@ void Menu_undoLoadState(void);
 void Menu_initState(void);
 void Menu_updateState(void);
 void Menu_loop(void);
+// A core-run netplay notice in the leave dialog's style, without buttons
+// ("Connecting...", "Netplay ended"); shown for hold_ms (0 = just drawn).
+void Menu_netplayNotice(const char* title, const char* subtitle, int hold_ms);
 void Options_updateVisibility(void);
 void OptionSaveChanges_updateDesc(void);
 void OptionAchievements_updateDesc(void);
@@ -29,3 +32,4 @@ bool getAlias(char* path, char* alias);
 int save_screenshot_thread(void* data);
 SDL_Surface* Menu_captureScreenSurface(Uint32 pixel_format);
 void Menu_queueScreenshotSave(const char* png_path);
+void Menu_waitScreenshotSave(void);

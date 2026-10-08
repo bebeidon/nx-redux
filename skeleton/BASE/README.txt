@@ -131,3 +131,10 @@ Not simple enough for you (or maybe your kids)? NX Redux has a simple mode that 
 Advanced
 
 NX Redux can automatically run a user-authored shell script on boot. Just place a file named "auto.sh" in "/.userdata/<DEVICE>/". If you're on Windows, make sure your text editor uses Unix line-endings (eg. `\n`), these devices usually choke on Windows line-endings (eg. `\r\n`).
+
+----------------------------------------
+Licenses and credits
+
+NX Redux is free software under the GNU GPL v3. It bundles emulator cores, tools and libraries from other projects, each under its own license. Their license texts are in "/.system/licenses/", and each emulator's license is also next to its core in its pak folder.
+
+The interface font is MiSans by Xiaomi (font1.ttf, font1-arabic.ttf), used under the MiSans Font Intellectual Property License Agreement. The boot screen, the DraStic menus and N64 on-screen messages use Rounded M+ 1c (SIL Open Font License 1.1). Button prompts are from Kenney's Input Prompts pack (CC0). The Files tool is NextCommander (https://github.com/LoveRetro/NextCommander), a DinguxCommander fork.

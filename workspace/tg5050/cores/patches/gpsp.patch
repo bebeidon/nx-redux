@@ -1,3 +1,4 @@
+# license: modifies gpSP (https://github.com/libretro/gpsp), GPL-2.0 (COPYING); this patch is distributed under the same license.
 diff --git forkSrcPrefix/Makefile forkDstPrefix/Makefile
 index dc4b60dec7f70a153dbc2eb849cd5acfc90f9d4d..94c7f8dd037284153b6858730a10b6aaaafd5ad4 100644
 --- forkSrcPrefix/Makefile

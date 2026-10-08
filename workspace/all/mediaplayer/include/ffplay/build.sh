@@ -6,16 +6,45 @@
 # Usage from host:
 #   docker run --rm -v .../workspace:/root/workspace \
 #     ghcr.io/loveretro/tg5040-toolchain:latest /bin/bash -c \
-#     'source ~/.bashrc && cd /root/workspace/nextui-video-player/ffplay && bash build.sh'
+#     'source ~/.bashrc && cd /root/workspace/all/mediaplayer/include/ffplay && bash build.sh'
+#
+# The binary lands in ../bin/ffplay unless FFPLAY_OUT names another path
+# (workspace/all/prebuilts/ffplay.sh uses that to build the shipped copy).
+#
+# Every download is pinned by sha256 and the build stops on a mismatch.
+# BUILD_DIR stays /tmp/ffplay-build: --prefix and the -I/-L paths below are
+# baked into the `ffplay -version` configuration string, so moving it would
+# change the binary for no reason.
 #
 set -e
 source ~/.bashrc
 
 FFPLAY_DIR="$(cd "$(dirname "$0")" && pwd)"
+FFPLAY_OUT="${FFPLAY_OUT:-$FFPLAY_DIR/../bin/ffplay}"
 BUILD_DIR=/tmp/ffplay-build
 FFMPEG_VERSION=6.1
 INSTALL=$BUILD_DIR/install
 DEPS_DIR=$BUILD_DIR/deps
+
+FFMPEG_SHA256=488c76e57dd9b3bee901f71d5c95eaf1db4a5a31fe46a28654e837144207c270
+FRIBIDI_SHA256=7fa16c80c81bd622f7b198d31356da139cc318a63fc7761217af4130903f54a2
+LIBXML2_SHA256=780157a1efdb57188ec474dca87acaee67a3a839c2525b2214d318228451809f
+FREETYPE_SHA256=8bee39bd3968c4804b70614a0a3ad597299ad0e824bc8aad5ce8aaf48067bde7
+LIBASS_SHA256=881f2382af48aead75b7a0e02e65d88c5ebd369fe46bc77d9270a94aa8fd38a2
+# fontconfig 2.13.1 headers, fetched one by one from the tag
+FC_FONTCONFIG_H_SHA256=fdaf99103c6646485ea5a9ca56dc4ed7d31872287e5508495c51b022f79c0516
+FC_FCFREETYPE_H_SHA256=c69d08b5e9720e15291ca30fcb706cdc58515dbf21a6cfd4818bbd142976d697
+FC_FCPRIVATE_H_SHA256=2d0b07968f4d7d09318d0f284dde0388f0c97f50f67bddd490a6ae5272cabd36
+
+# fetch URL DEST SHA256: download, then refuse anything that doesn't match
+fetch() {
+    wget -q "$1" -O "$2"
+    if ! echo "$3  $2" | sha256sum -c --quiet -; then
+        echo "sha256 mismatch for $1" >&2
+        rm -f "$2"
+        exit 1
+    fi
+}
 
 echo "=== ffplay build for NextUI ==="
 echo "Source dir: $FFPLAY_DIR"
@@ -25,7 +54,7 @@ if [ ! -f "$BUILD_DIR/configure" ]; then
     echo "=== Downloading FFmpeg $FFMPEG_VERSION ==="
     mkdir -p $BUILD_DIR
     cd /tmp
-    wget -q "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz" -O ffmpeg.tar.xz
+    fetch "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz" ffmpeg.tar.xz $FFMPEG_SHA256
     tar xf ffmpeg.tar.xz -C $BUILD_DIR --strip-components=1
     rm ffmpeg.tar.xz
 fi
@@ -40,7 +69,7 @@ if [ ! -f "$INSTALL/lib/libfribidi.a" ]; then
     echo "=== Building fribidi ==="
     cd $DEPS_DIR
     if [ ! -d "fribidi-1.0.13" ]; then
-        wget -q "https://github.com/fribidi/fribidi/releases/download/v1.0.13/fribidi-1.0.13.tar.xz" -O fribidi.tar.xz
+        fetch "https://github.com/fribidi/fribidi/releases/download/v1.0.13/fribidi-1.0.13.tar.xz" fribidi.tar.xz $FRIBIDI_SHA256
         tar xf fribidi.tar.xz
         rm fribidi.tar.xz
     fi
@@ -66,7 +95,7 @@ if [ ! -f "$INSTALL/lib/libxml2.a" ]; then
     echo "=== Building libxml2 ==="
     cd $DEPS_DIR
     if [ ! -d "libxml2-2.11.9" ]; then
-        wget -q "https://download.gnome.org/sources/libxml2/2.11/libxml2-2.11.9.tar.xz" -O libxml2.tar.xz
+        fetch "https://download.gnome.org/sources/libxml2/2.11/libxml2-2.11.9.tar.xz" libxml2.tar.xz $LIBXML2_SHA256
         tar xf libxml2.tar.xz
         rm libxml2.tar.xz
     fi
@@ -118,7 +147,7 @@ if [ ! -f "$INSTALL/lib/libass.a" ]; then
     # Download freetype and fontconfig headers
     if [ ! -d "$INSTALL/include/freetype2" ]; then
         echo "=== Downloading freetype headers ==="
-        wget -q "https://download.savannah.gnu.org/releases/freetype/freetype-2.11.0.tar.xz" -O freetype.tar.xz
+        fetch "https://download.savannah.gnu.org/releases/freetype/freetype-2.11.0.tar.xz" freetype.tar.xz $FREETYPE_SHA256
         tar xf freetype.tar.xz
         rm freetype.tar.xz
         cp -r freetype-2.11.0/include/* $INSTALL/include/
@@ -140,9 +169,11 @@ EOF
     if [ ! -d "$INSTALL/include/fontconfig" ]; then
         echo "=== Downloading fontconfig headers ==="
         mkdir -p $INSTALL/include/fontconfig
-        for hdr in fontconfig.h fcfreetype.h fcprivate.h; do
-            wget -q "https://gitlab.freedesktop.org/fontconfig/fontconfig/-/raw/2.13.1/fontconfig/$hdr" \
-                -O $INSTALL/include/fontconfig/$hdr
+        for hdr in fontconfig.h:$FC_FONTCONFIG_H_SHA256 \
+                   fcfreetype.h:$FC_FCFREETYPE_H_SHA256 \
+                   fcprivate.h:$FC_FCPRIVATE_H_SHA256; do
+            fetch "https://gitlab.freedesktop.org/fontconfig/fontconfig/-/raw/2.13.1/fontconfig/${hdr%%:*}" \
+                $INSTALL/include/fontconfig/${hdr%%:*} ${hdr#*:}
         done
         cat > $INSTALL/lib/pkgconfig/fontconfig.pc << EOF
 prefix=$INSTALL
@@ -160,7 +191,7 @@ EOF
 
     # Download and build libass (0.14.0 - supports --disable-harfbuzz)
     if [ ! -d "libass-0.14.0" ]; then
-        wget -q "https://github.com/libass/libass/releases/download/0.14.0/libass-0.14.0.tar.xz" -O libass.tar.xz
+        fetch "https://github.com/libass/libass/releases/download/0.14.0/libass-0.14.0.tar.xz" libass.tar.xz $LIBASS_SHA256
         tar xf libass.tar.xz
         rm libass.tar.xz
     fi
@@ -277,6 +308,9 @@ if [ ! -f "$BUILD_DIR/config.h" ] || ! grep -q "CONFIG_LIBASS 1" "$BUILD_DIR/con
     echo "=== Configuring FFmpeg (with libass + libxml2/DASH support) ==="
     make distclean 2>/dev/null || true
 
+    # No --enable-gpl/--enable-nonfree: the device's OpenSSL is 1.1, which
+    # FFmpeg only allows in a GPL build as "nonfree" (unredistributable). Every
+    # decoder and filter we enable is LGPL, so the binary is LGPL-2.1+.
     ./configure \
         --arch=aarch64 \
         --target-os=linux \
@@ -291,8 +325,6 @@ if [ ! -f "$BUILD_DIR/config.h" ] || ! grep -q "CONFIG_LIBASS 1" "$BUILD_DIR/con
         --disable-doc \
         --enable-static \
         --disable-shared \
-        --enable-gpl \
-        --enable-nonfree \
         --enable-libass \
         --enable-libfreetype \
         --enable-libfontconfig \
@@ -385,11 +417,12 @@ fi
 echo "=== Building ffplay ==="
 make ffplay -j$(nproc) 2>&1 | tail -10
 
-# Copy result back to project bin/
+# Copy the result out (../bin/ffplay, or FFPLAY_OUT)
 echo "=== Copying ffplay binary ==="
-cp $BUILD_DIR/ffplay $FFPLAY_DIR/../bin/ffplay
+mkdir -p "$(dirname "$FFPLAY_OUT")"
+cp $BUILD_DIR/ffplay "$FFPLAY_OUT"
 
 echo "=== Done ==="
-ls -la $FFPLAY_DIR/../bin/ffplay
-file $FFPLAY_DIR/../bin/ffplay
+ls -la "$FFPLAY_OUT"
+file "$FFPLAY_OUT"
 aarch64-nextui-linux-gnu-readelf -d $BUILD_DIR/ffplay 2>/dev/null | grep -E "NEEDED|RPATH|RUNPATH"

@@ -7,13 +7,10 @@
 
 #define TMP_DIR "/tmp/scraper"
 
-// SHARED_USERDATA_PATH is a runtime array (not a string literal) on desktop
-// builds (see paths.h), so it can no longer be adjacent-string-literal
-// concatenated at compile time like the old CREDS_DIR/CREDS_USER/CREDS_PASS
-// macros did; build the same paths with snprintf instead (byte-identical to
-// the old macros on device, where SHARED_USERDATA_PATH is still a
-// compile-time literal). static inline so each TU that doesn't call one
-// doesn't warn about an unused static function.
+// Credential paths under SHARED_USERDATA_PATH, built with snprintf (the
+// values match the old CREDS_DIR/CREDS_USER/CREDS_PASS macros). static
+// inline so each TU that doesn't call one doesn't warn about an unused static
+// function.
 static inline char* creds_dir(void) {
 	static char buf[MAX_PATH];
 	snprintf(buf, sizeof(buf), "%s/.scraper", SHARED_USERDATA_PATH);
@@ -36,7 +33,7 @@ typedef enum {
 	SCRAPE_RESULT_NOTFOUND = 2,
 } ScrapeResult;
 
-// stage is one of: "searching", "downloading", "compositing"
+// stage is one of: "searching", "downloading", "saving", "compositing"
 typedef void (*ScrapeProgressCb)(const char* stage, void* userdata);
 
 // Variant art path: /Roms/GBA/.media/Game.png + "screenshot" ->
@@ -44,14 +41,20 @@ typedef void (*ScrapeProgressCb)(const char* stage, void* userdata);
 void Scraper_variantPath(const char* out_png, const char* variant,
 						 char* out, size_t out_size);
 
-// Search ScreenScraper for `filename` (hashing `rom_path`) under `system_id`,
-// download the available art and write every variant from that one download
-// set: the mix composite to `out_png` (creating its .media dir), plus, when
-// the source image exists, screenshot-only and box-art-only PNGs under
-// .media/screenshot/ and .media/boxart/. Reports each stage via `cb` (may be
-// NULL). Pure worker: no GFX, no globals — safe to call from the GUI queue
-// thread or a headless process. A variant that fails to save does not fail
-// the scrape; only the mix composite decides the result.
+// Reset artwork for one .media directory: delete the PNGs in each scraper variant folder (screenshot/, boxart/,
+// boxart2d/, wheel/, mix/) and remove each folder once it is empty. The root .media/*.png pictures are the user's own
+// art (Ports, hand-made pictures) and the folder backgrounds: never touched. Returns the number of files deleted.
+int Scraper_deleteMediaArtwork(const char* media_path);
+
+// Reset artwork across `roms_root`: Scraper_deleteMediaArtwork for every folder's .media, nested game folders too
+// (e.g. Roms/GB/Hacks/.media), skipping hidden folders. Returns the number of files deleted.
+int Scraper_deleteAllArtwork(const char* roms_root);
+
+// Search ScreenScraper for `filename` (hashing `rom_path`) under `system_id`, download its screenshot and box art and
+// save each that exists as a PNG under .media/screenshot/ and .media/boxart/ next to `out_png` (the .media/<name>.png
+// base path). The download preferences (scraper_prefs.h) add .media/boxart2d/ and .media/wheel/ (full colour), and the
+// mix composite at .media/mix/ (full colour); `out_png` itself is not written. Reports each stage via `cb` (may be NULL). Pure worker: no GFX, no globals — safe to call from
+// the GUI queue thread or a headless process. OK when the screenshot or the box art saved.
 ScrapeResult scrapeOne(const char* filename, const char* rom_path, int system_id,
 					   const char* out_png, ScrapeProgressCb cb, void* userdata);
 

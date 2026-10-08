@@ -1,3 +1,4 @@
+# license: modifies Gambatte (https://github.com/libretro/gambatte-libretro), GPL-2.0 (COPYING); this patch is distributed under the same license.
 diff --git a/Makefile.common b/Makefile.common
 index 060acb9..c982cad 100644
 --- a/Makefile.common

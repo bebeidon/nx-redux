@@ -3,7 +3,7 @@
 
 The hint bar renders button glyphs at SCALE1(BUTTON_SIZE) = BUTTON_SIZE * FIXED_SCALE
 pixels (BUTTON_SIZE = 16, see workspace/all/common/defines.h). FIXED_SCALE is 2 on
-most devices and 3 on Brick Pro / desktop, and on tg5040 it is chosen at *runtime*
+most devices and 3 on Brick, and on tg5040 it is chosen at *runtime*
 (is_brick ? 3 : 2) -- so a single build must ship both sizes. We therefore bake one
 variant per scale, named with the same "@Nx" convention as assets@Nx.png, so the
 loader can pick nav_<name>@<FIXED_SCALE>x.png at runtime with zero runtime scaling.
@@ -34,7 +34,8 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RES_DIR = os.path.join(REPO, "skeleton", "SYSTEM", "res")
 
 BUTTON_SIZE = 16            # logical px, must match defines.h
-SCALES = (2, 3)            # FIXED_SCALE values shipped on device
+# Each device's UI scale (ui_scale.h UIScale_forDevice): the Brick, the Brick Pro, the 1280x720 panels.
+SCALES = (3, 2.5, 2.25)
 MASTER_PREFIX = "nav_"      # 128x128 masters (buttons, triggers, dpad)
 
 
@@ -69,10 +70,10 @@ def main():
         bbox = img.getbbox()
         content = img.crop(bbox) if bbox else img
         for scale in SCALES:
-            target_h = BUTTON_SIZE * scale                     # 32 @2x, 48 @3x
+            target_h = round(BUTTON_SIZE * scale)              # 48 @3x, 36 @2.25x, 40 @2.5x
             ratio = target_h / content.height
             target_w = max(1, round(content.width * ratio))
-            out = os.path.join(RES_DIR, f"{stem}@{scale}x.png")
+            out = os.path.join(RES_DIR, f"{stem}@{scale:g}x.png")
             if check_only:
                 if not os.path.exists(out):
                     stale.append(os.path.basename(out))

@@ -1,3 +1,4 @@
+# license: modifies Snes9x (https://github.com/libretro/snes9x), Snes9x license (LICENSE); this patch is distributed under the same license.
 diff --git a/libretro/Makefile b/libretro/Makefile
 index 466fa6b..ec40f1a
 --- a/libretro/Makefile

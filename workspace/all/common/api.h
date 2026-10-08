@@ -5,6 +5,7 @@
 #include "scaler.h"
 #include "defines.h"
 #include <stdbool.h>
+#include "hwr_plat.h"
 
 ///////////////////////////////
 
@@ -138,6 +139,7 @@ enum {
 	ASSET_BATTERY_FILL,
 	ASSET_BATTERY_FILL_LOW,
 	ASSET_BATTERY_BOLT,
+	ASSET_BATTERY_CHARGING, // wider outline with a vertical bolt, the percentage beside it
 
 	ASSET_SCROLL_UP,
 	ASSET_SCROLL_DOWN,
@@ -180,6 +182,11 @@ extern GFX_Fonts font_ar; // secondary Arabic font (MiSans Arabic), same sizes
 
 // The Arabic-font counterpart of a primary size-font (NULL if unavailable).
 TTF_Font* GFX_fallbackFontFor(TTF_Font* primary);
+// Register a resolver GFX_fallbackFontFor consults for fonts outside `font` (one slot; common/ui/ui_font.c
+// registers one so its runtime fonts render Arabic with font1-arabic.ttf at their own size and style).
+void GFX_setFallbackFontResolver(TTF_Font* (*resolver)(TTF_Font* primary));
+// The Arabic UI font file (RES_PATH/font1-arabic.ttf), shared by the system fonts and ui_font.c.
+const char* GFX_getArabicFontPath(void);
 
 enum {
 	SHARPNESS_SHARP,
@@ -235,6 +242,10 @@ typedef struct
 	int cycles;
 
 } LightSettings;
+
+// Highest effect the trimui led_anim driver implements (1 linear .. 7 blink3)
+#define LED_EFFECT_MAX 7
+#define LED_EFFECT_STATIC 4
 
 extern LightSettings lightsDefault[MAX_LIGHTS];
 
@@ -300,15 +311,12 @@ SDL_Color uintToColour(uint32_t rgba); // packed 0xRRGGBBAA
 void GFX_startFrame(void);
 void GFX_flip(SDL_Surface* screen);
 void PLAT_flipHidden();
-void GFX_flip_fixed_rate(SDL_Surface* screen, double target_fps); // if target_fps is 0, then use the native screen FPS
-#define GFX_supportsOverscan PLAT_supportsOverscan				  // (void)
-void GFX_sync(void);											  // call this to maintain 60fps when not calling GFX_flip() this frame
-void GFX_delay(void);											  // gfx_sync() is only for everywhere where there is no audio buffer to rely on for delaying, stupid so doing gfx_delay() for like waiting for input loop in binding menu. Need to remove gfx_sync() everwhere eventually
+void GFX_flip_fixed_rate(SDL_Surface* screen, double target_fps);				// if target_fps is 0, then use the native screen FPS
+void GFX_flip_scheduled(SDL_Surface* screen, double slot_s, double target_fps); // present one slot after the previous; a 1/fps slot is fixed rate
+#define GFX_supportsOverscan PLAT_supportsOverscan								// (void)
+void GFX_sync(void);															// call this to maintain 60fps when not calling GFX_flip() this frame
+void GFX_delay(void);															// gfx_sync() is only for everywhere where there is no audio buffer to rely on for delaying, stupid so doing gfx_delay() for like waiting for input loop in binding menu. Need to remove gfx_sync() everwhere eventually
 void GFX_quit(void);
-// Re-applies the stored UI scale (CFG_getUIScale) to a running process: asset
-// sheet, asset rects, nav glyphs and fonts. Returns -1 and keeps the old scale
-// if the new asset sheet can't load.
-int GFX_reloadScale(void);
 
 enum {
 	VSYNC_OFF = 0,
@@ -326,6 +334,15 @@ void GFX_setVsync(int vsync);
 // colour changes need no invalidation because the colour is part of the key.
 // Purpose: eliminate per-frame TTF rasterization in animated list redraws.
 SDL_Surface* GFX_getCachedText(TTF_Font* font, const char* text, SDL_Color color);
+// Drop font's cached text surfaces. Call before TTF_CloseFont on a font that may have been passed to
+// GFX_getCachedText: the cache keys on the pointer, and a font reopened at the same address would hit them.
+void GFX_forgetFontText(TTF_Font* font);
+// The TTF file the system fonts (font.*) were last loaded from: the user's selected UI font.
+const char* GFX_getSystemFontPath(void);
+// Register a callback that closes a runtime font cache (one slot; common/ui/ui_font.c uses it). It runs
+// before every system-font reload (font change) and in GFX_quit, so the cache reopens on the
+// new font. It must GFX_forgetFontText each font it closes.
+void GFX_setFontReloadHook(void (*hook)(void));
 
 // Arabic-aware text primitives (drop-in replacements). Non-Arabic input takes
 // the identical legacy path; Arabic is shaped + BiDi-reordered and drawn with
@@ -336,6 +353,16 @@ void GFX_measureText(TTF_Font* primary, const char* utf8, int* w, int* h);
 SDL_Surface* GFX_renderTextWrapped(TTF_Font* primary, const char* utf8, SDL_Color color, uint32_t wrap_w);
 
 int GFX_truncateText(TTF_Font* font, const char* in_name, char* out_name, int max_width, int padding); // returns final width
+// `text` as it fits `avail` px with `padding` (GFX_truncateText when it doesn't) into out (256 bytes), its own width in
+// *raw_w; true when truncated. Remembered per font, text and room (dropped with the text cache), so a list's rows
+// aren't measured every frame.
+bool GFX_fitTextCached(TTF_Font* font, const char* text, char* out, int avail, int padding, int* raw_w);
+// How many GFX_flip calls so far: a caller that keeps what its last frame left in the screen checks that nothing else
+// (a dialog, an overlay) has flipped a screen of its own since.
+unsigned GFX_flipCount(void);
+// A pill (as GFX_blitPillColor draws it) added as GPU sprites over the screen instead, clipped to `clip` (NULL: none).
+// False when it couldn't be (draw it the software way).
+bool GFX_pillSprites(int asset, const SDL_Rect* rect, uint32_t asset_color, const SDL_Rect* clip);
 int PLAT_textShouldScroll(TTF_Font* font, const char* in_name, int max_width, SDL_mutex* fontMutex);
 void PLAT_resetScrollText(void);
 int GFX_getTextWidth(TTF_Font* font, const char* in_name, char* out_name, int max_width, int padding); // returns final width
@@ -375,6 +402,7 @@ void GFX_blitRectColor(int asset, SDL_Surface* dst, SDL_Rect* dst_rect, uint32_t
 // SDL_FillRect; lower alpha is blended over the existing pixels.
 void GFX_fillRectColor(SDL_Surface* dst, const SDL_Rect* rect, uint32_t mapped_color);
 void GFX_blitBatteryAtPosition(SDL_Surface* dst, int x, int y);
+// A button hint (glyph + label) at the UI scale: the button hint bar's.
 int GFX_getButtonWidth(char* hint, char* button);
 void GFX_blitButton(char* hint, char* button, SDL_Surface* dst, SDL_Rect* dst_rect);
 // "Button layout" (Settings > System), read once per process at first poll.
@@ -401,6 +429,10 @@ int GFX_blitHardwareGroup(SDL_Surface* dst, IndicatorType show_setting);
  * @return The width of the rendered indicator
  */
 int GFX_blitHardwareIndicator(SDL_Surface* dst, int x, int y, IndicatorType indicator_type);
+// The same at INDICATOR_SCALE (defines.h), two thirds of the UI scale: the top bar's and the in-game popup's.
+// GFX_hardwareIndicatorSize gives the box it fills.
+void GFX_hardwareIndicatorSize(int* w, int* h);
+int GFX_blitHardwareIndicatorFixed(SDL_Surface* dst, int x, int y, IndicatorType indicator_type);
 
 /**
  * Create a surface with the same pixel format as gfx.screen.
@@ -447,6 +479,7 @@ void SND_quit(void);
 void SND_resetAudio(double sample_rate, double frame_rate);
 void SND_flushALSAConfig(void); // flush cached .asoundrc so ALSA re-reads on next open
 void SND_pauseAudio(bool paused);
+float SND_bufferOccupancy(void); // 0 (empty) .. 1 (full)
 void SND_setQuality(int quality);
 
 // watch audio device changes
@@ -649,7 +682,7 @@ enum {
 // FAST = where the emulation thread and the core's own threads run, SLOW =
 // minarch's helpers and the GPU driver's threads. tg5050: FAST = the online
 // big cores (cpu4-7), SLOW = cpu0-1. tg5040 (one cluster): FAST = cpu3 alone,
-// SLOW = cpu0-2 — isolation rather than a cluster split. Desktop: no-op.
+// SLOW = cpu0-2 — isolation rather than a cluster split.
 // Unlike PLAT_pinToCores (legacy, untouched, tg5050-only) these exist on both
 // devices, so "none" stays exactly today's behaviour.
 enum {
@@ -684,6 +717,16 @@ void PLAT_setOffsetX(int x);
 void PLAT_setOffsetY(int y);
 void PLAT_drawOnLayer(SDL_Surface* inputSurface, int x, int y, int w, int h, float brightness, bool maintainAspectRatio, int layer);
 void PLAT_clearLayers(int layer);
+// How many times a layer (1-5) has been drawn on or cleared: a caller that uploads a layer compares it with the value
+// it saw after its own upload to tell whether anything else has touched the layer since
+unsigned PLAT_layerSerial(int layer);
+// Game art blended over the background layer as part of it: drawn over layer 1 (and under layer 2) at dst on every
+// composite until cleared (NULL), freed (PLAT_freeTexture) or dropped by anything that clears or draws on layer 1. The
+// texture stays the caller's.
+void PLAT_setLayerArt(SDL_Texture* tex, const SDL_Rect* dst);
+// A texture drawn (blended) onto a layer at dst: PLAT_drawOnLayer without making and uploading a texture each call,
+// for a surface drawn again unchanged (keep its texture with PLAT_textureForSurface).
+void PLAT_drawTextureOnLayer(SDL_Texture* tex, const SDL_Rect* dst, int layer);
 SDL_Surface* PLAT_captureRendererToSurface();
 
 // Notification overlay for GL rendering (rendered on top of game during PLAT_GL_Swap)
@@ -727,6 +770,67 @@ void PLAT_GL_Swap();
 void GFX_GL_Swap();
 unsigned char* PLAT_GL_screenCapture(int* outWidth, int* outHeight);
 void PLAT_GPU_Flip();
+
+// GPU sprites over the screen layer (a frame's moving pictures drawn by the GPU instead of blended into the screen):
+// the list is drawn right above the screen texture on every composite until it is cleared. dst and clip are in screen
+// px; src NULL = the whole texture. The texture is the surface's own (PLAT_textureForSurface, kept in s->userdata);
+// free such a surface with PLAT_freeSurfaceTexture first. A texture freed (either way) leaves the sprite lists too.
+// PLAT_spriteAddUnder: the same, in a second list drawn under the screen layer (over the background layers), seen
+// through the screen's transparent pixels (a Backdrop game list's full-screen picture). PLAT_spritesClear clears both.
+void PLAT_spritesClear(void);
+void PLAT_spriteAdd(SDL_Texture* tex, const SDL_Rect* src, const SDL_Rect* dst, Uint8 alpha, const SDL_Rect* clip);
+void PLAT_spriteAddUnder(SDL_Texture* tex, const SDL_Rect* src, const SDL_Rect* dst, Uint8 alpha, const SDL_Rect* clip);
+// PLAT_spriteAdd with a grey colour mod: the texture's colours times shade/255 (a card darkened toward black whose
+// transparent corners stay transparent, as a black sprite over it would not).
+void PLAT_spriteAddShaded(SDL_Texture* tex, const SDL_Rect* src, const SDL_Rect* dst, Uint8 alpha, Uint8 shade,
+						  const SDL_Rect* clip);
+// Drop tex's sprites from both lists before the next clear: for a sprite the next present must no longer show (a List
+// marquee's held title, once its GPU scroll takes over between full frames).
+void PLAT_spriteRemove(SDL_Texture* tex);
+SDL_Texture* PLAT_textureForSurface(SDL_Surface* s);
+void PLAT_freeSurfaceTexture(SDL_Surface* s);
+// A surface out with its GPU texture, if it ever got one (a sprite's: PLAT_textureForSurface). NULL-safe.
+static inline void GFX_freeSurfaceAndTexture(SDL_Surface* s) {
+	if (!s)
+		return;
+	PLAT_freeSurfaceTexture(s);
+	SDL_FreeSurface(s);
+}
+// A new texture of s's pixels that the caller owns (not kept in s->userdata, so it outlives s): free it with
+// PLAT_freeTexture.
+SDL_Texture* PLAT_textureFromSurface(SDL_Surface* s);
+void PLAT_freeTexture(SDL_Texture* t);
+// An owned, empty w x h ARGB8888 texture (blend mode BLEND) to fill a band at a time: PLAT_textureUpdateRows uploads
+// rows [y, y + h) of s (ARGB8888, the texture's size), so a big picture's upload can be spread over several frames.
+// Freed with PLAT_freeTexture.
+SDL_Texture* PLAT_textureCreate(int w, int h);
+void PLAT_textureUpdateRows(SDL_Texture* t, SDL_Surface* s, int y, int h);
+// An owned w x h render-target texture, opaque: PLAT_targetBegin starts it over as black and makes it the drawing
+// target, PLAT_targetDraw blends a texture into it (dst in its px, at alpha), PLAT_targetEnd goes back to the screen.
+// For flattening several full-screen layers once (a Backdrop crossfade cut short) instead of blending them all on
+// every composite. Freed with PLAT_freeTexture.
+SDL_Texture* PLAT_targetCreate(int w, int h);
+void PLAT_targetBegin(SDL_Texture* t);
+void PLAT_targetDraw(SDL_Texture* tex, const SDL_Rect* dst, Uint8 alpha);
+void PLAT_targetEnd(void);
+// PLAT_spriteAddUnder for an opaque texture drawn at full alpha over the whole screen: drawn without blending, and
+// what is under it (the background layers, the under-sprites added before it) is skipped, being covered.
+void PLAT_spriteAddUnderOpaque(SDL_Texture* tex, const SDL_Rect* dst);
+// Draw only these row bands of the screen texture on the next PLAT_flip's composite: for frames whose screen is fully
+// transparent outside them (a Backdrop game list's sprite frame: its picture and row are sprites), so a full-screen
+// blend of clear pixels is skipped. Consumed by that flip; n <= 0 = the whole screen.
+void PLAT_setScreenDrawBands(const int* y, const int* h, int n);
+// Draw rows [y, y + h) of the screen texture at opacity a (a colour and alpha mod: the premultiplied layer at true
+// opacity over what is under it), on every composite until set again; a = 255 (or h <= 0) clears it. False when the
+// screen doesn't composite premultiplied (nothing set: the caller dims in software instead).
+bool PLAT_setScreenDim(int y, int h, Uint8 a);
+// Re-upload a surface's pixels into its texture (one it already has; a no-op otherwise): for a small surface redrawn
+// every frame (the Grid's edge shade), without making a new texture each time.
+void PLAT_textureRefresh(SDL_Surface* s);
+// Upload only these row bands of the screen on the next PLAT_flip (the rest of the screen texture keeps what it had):
+// for frames whose other rows are known unchanged. Up to 4. Consumed by that flip; n <= 0 = the whole screen (only
+// its changed rows: a hash per row).
+void PLAT_setUploadBands(const int* y, const int* h, int n);
 void PLAT_setShaders(int nr);
 void PLAT_resetShaders();
 void PLAT_clearShaders();
@@ -760,7 +864,7 @@ void PLAT_setCPUSpeedRange(int min_khz, int max_khz);
 // minarch_cpu_min/max before PLAT_setCPUSpeedRange writes the range to each
 // policy (the kernel then clamps per cluster). tg5040: cpu0. tg5050: cpu0 and,
 // when online, cpu4 — so a big-core cap is not truncated to the little cluster's
-// 1416 MHz ceiling. Returns false when no cpufreq exists (desktop).
+// 1416 MHz ceiling. Returns false when no cpufreq exists.
 bool PLAT_getCPUHwRangeKhz(int* min_khz, int* max_khz);
 // Launcher-only topology hook (nextui/cpu_policy.h): false takes the big core
 // offline while the launcher runs, true brings it back for the boot phase.

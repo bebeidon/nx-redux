@@ -154,7 +154,7 @@ void clock_adjustment_run(SDL_Surface* screen) {
 	while ((c = chars[i])) {
 		digit = GFX_renderText(font.large, c, COLOR_WHITE);
 		if (digit) {
-			int y = i == CHAR_COLON ? SCALE1(-1.5) : 0;
+			int y = i == CHAR_COLON ? (int)(-1.5f * FIXED_SCALE) : 0; // truncated toward zero, as the Brick has always drawn it
 			SDL_BlitSurface(digit, NULL, clock_digits, &(SDL_Rect){(i * SCALE1(DIGIT_WIDTH)) + (SCALE1(DIGIT_WIDTH) - digit->w) / 2, y + (SCALE1(DIGIT_HEIGHT) - digit->h) / 2});
 			SDL_FreeSurface(digit);
 		}
@@ -265,8 +265,7 @@ void clock_adjustment_run(SDL_Surface* screen) {
 				select_cursor -= option_count;
 
 			// Marker file under USERDATA_PATH. Touched/removed directly rather
-			// than through `touch`/`rm` in a shell: the path is a runtime value
-			// on desktop and was passed unquoted.
+			// than through `touch`/`rm` in a shell.
 			if (show_24hour) {
 				FILE* f = fopen(show_24hour_path, "a");
 				if (f)
@@ -286,7 +285,7 @@ void clock_adjustment_run(SDL_Surface* screen) {
 
 			GFX_clear(screen);
 
-			UI_renderMenuBar(screen, "Clock");
+			UI_renderMenuBar(screen, "Settings | Clock");
 
 			UI_renderButtonHintBar(screen, (char*[]){"B", "CANCEL", "A", "SET", "SELECT", show_24hour ? "12 HOUR" : "24 HOUR", NULL});
 

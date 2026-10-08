@@ -5,9 +5,10 @@
 #include <unistd.h>
 
 static void print_snapshot(const MusicSnapshotWire* s) {
-	printf("source=%d source_state=%d state=%d file=%s title=%s artist=%s position_ms=%d duration_ms=%d queue=%d/%d eof=%d\n",
+	printf("source=%d source_state=%d state=%d file=%s title=%s artist=%s position_ms=%d duration_ms=%d queue=%d/%d eof=%d album=%s artwork=%s\n",
 		   s->source, s->source_state, s->state, s->current_file, s->title, s->artist,
-		   s->position_ms, s->duration_ms, s->queue_index, s->queue_count, s->stream_eof);
+		   s->position_ms, s->duration_ms, s->queue_index, s->queue_count, s->stream_eof,
+		   s->album, s->artwork_path);
 }
 
 int main(int argc, char** argv) {

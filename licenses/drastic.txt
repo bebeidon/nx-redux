@@ -1,0 +1,52 @@
+DraStic (Nintendo DS emulator, by Exophase) packaged via advanced_drastic (by trngaje)
+Source: https://github.com/trngaje/advanced_drastic (DraStic itself: closed source, by Exophase)
+Version: advanced_drastic 2b87c96a805758a249127ac979e0b33a64dd7199 (2026-01-21; DRASTIC_REPO/DRASTIC_COMMIT in the root Makefile); bundled DraStic binary is r2.4.0.0p (top changelog entry of drastic_readme.txt; advanced_drastic README pins md5 59a7711eff41c640b8861b4d869c747d)
+Shipped as: BASE/Emus/shared/drastic/ (fetched from the advanced_drastic tarball at `make setup`: drastic binary, drastic_readme.txt, system/ replacement BIOS, usrcheat.dat, game_database.xml, config/, devices/, microphone, show_hotkeys, resources/), overlaid with skeleton/BASE/Emus/shared/drastic/resources/; SYSTEM/tg5050/paks/Emus/NDS.pak/libs/libadvdrastic.so (prebuilt advanced_drastic hook library, committed in skeleton)
+License: proprietary freeware, no license text published upstream. DraStic is closed source (see the FAQ excerpt below); the advanced_drastic repository (and its libadvdrastic.so, trngaje/drastic_layout resources) has no LICENSE file and GitHub reports no license (checked via api.github.com 2026-10-07). No explicit redistribution grant exists; the terms below are the only statements published upstream.
+
+Excerpts reproduced verbatim from drastic_readme.txt at advanced_drastic 2b87c96a805758a249127ac979e0b33a64dd7199
+(https://raw.githubusercontent.com/trngaje/advanced_drastic/2b87c96a805758a249127ac979e0b33a64dd7199/drastic_readme.txt):
+
+==== drastic_readme.txt (lines 1-5) ====
+DraStic Nintendo DS emulator
+
+by Exophase (exophase@gmail.com)
+
+~ desperate times call for drastic measures ~
+
+==== drastic_readme.txt (FAQ: Where's the source code?) ====
+Q: Where's the source code?
+A: DraStic is closed source for the foreseeable future. It's not violating
+   any licenses. If you want the source code for some reason send me an e-mail
+   and I will consider it, depending on what you want it for and how trustworthy
+   you seem.
+
+==== drastic_readme.txt (FAQ: Will DraStic cost money?) ====
+Q: Will DraStic cost money?
+A: The Pandora version will remain free. Other ports vary. The Android version
+   currently costs $5.99 USD and comparable prices in other countries.
+
+
+==== drastic_readme.txt (Credits & Thanks) ====
+-- Credits & Thanks --
+
+Lordus    - Work on Android version, unarchive code, testing and ideas
+notaz     - Invaluable coding help and testing
+Slaeshjag - Testing and coding help, and some nice demo videos
+Normmatt  - Lots of help with cheat codes and other stuff
+Neelix    - Hardcore beta tester
+Tensuke   - logo #1
+felix20   - logo #2
+AsHperson - Beta tester and big help with support
+JayHaru   - Beta tester and big help with support
+beeflot   - Beta tester and Chinese specialist
+Kaikun    - Beta testing
+
+
+==== advanced_drastic README.md (lines 1-6) ====
+### advanced_drastic
+
+This project was launched to overcome the limitations of screen output and input fixed as base with the drastic-steward 32-bit source developed for miyoomini by steward-fu.
+
+For normal operation, you must use the drastic file below.<br>
+md5sum:59a7711eff41c640b8861b4d869c747d  drastic<br>

@@ -1,5 +1,7 @@
 #include "defines.h"
 #include "api.h"
+#include "flip_schedule.h"
+#include "ui_pill_cap.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -95,8 +97,22 @@ static uint32_t asset_rgbs[ASSET_COLORS];
 GFX_Fonts font;
 GFX_Fonts font_ar; // secondary Arabic font (MiSans Arabic), same sizes as `font`
 
-// The Arabic-font counterpart of a primary size-font (NULL if the Arabic font
-// failed to load or `primary` isn't one of the size fonts).
+// Resolver for fonts outside `font` (common/ui/ui_font.c's runtime cache registers one).
+static TTF_Font* (*fallback_resolver)(TTF_Font* primary) = NULL;
+
+void GFX_setFallbackFontResolver(TTF_Font* (*resolver)(TTF_Font* primary)) {
+	fallback_resolver = resolver;
+}
+
+const char* GFX_getArabicFontPath(void) {
+	static char path[MAX_PATH];
+	if (!path[0])
+		snprintf(path, sizeof(path), "%s/font1-arabic.ttf", RES_PATH);
+	return path;
+}
+
+// The Arabic-font counterpart of a primary size-font, or of a font the registered resolver knows (NULL if
+// the Arabic font failed to load or `primary` is unknown).
 TTF_Font* GFX_fallbackFontFor(TTF_Font* primary) {
 	if (primary == font.xlarge)
 		return font_ar.xlarge;
@@ -112,7 +128,7 @@ TTF_Font* GFX_fallbackFontFor(TTF_Font* primary) {
 		return font_ar.tiny;
 	if (primary == font.micro)
 		return font_ar.micro;
-	return NULL;
+	return fallback_resolver ? fallback_resolver(primary) : NULL;
 }
 
 // Render UTF-8 to a NEW surface (caller frees). Non-Arabic text takes the exact
@@ -325,13 +341,103 @@ typedef struct {
 static TextCacheEntry text_cache[TEXT_CACHE_SIZE];
 static uint32_t text_cache_lru = 0;
 
+// ---- Cached text fitting ---------------------------------------------------
+// A list row's pill width is its text measured, and a text too wide for its row truncated (a measure per candidate
+// length): every visible row, every frame of a glide or a held D-pad. Kept per (font, text, room), so a row the list
+// keeps showing isn't measured again; dropped with the text cache (a font reload).
+#define FIT_CACHE_SIZE 64
+typedef struct {
+	TTF_Font* font;
+	int avail, padding;
+	Uint32 hash;
+	char text[256];
+	int raw_w;		// the text's own width
+	char fit[256];	// the text as it fits the room (itself when it does)
+	bool truncated; // fit is the truncated text
+	uint32_t lru;
+} FitCacheEntry;
+static FitCacheEntry fit_cache[FIT_CACHE_SIZE];
+static uint32_t fit_cache_lru = 0;
+
+static void fitCacheForget(TTF_Font* font) {
+	for (int i = 0; i < FIT_CACHE_SIZE; i++)
+		if (!font || fit_cache[i].font == font)
+			fit_cache[i] = (FitCacheEntry){0};
+	if (!font)
+		fit_cache_lru = 0;
+}
+
+bool GFX_fitTextCached(TTF_Font* font, const char* text, char* out, int avail, int padding, int* raw_w) {
+	size_t len = text ? strlen(text) : 0;
+	if (!font || !text || len >= sizeof(fit_cache[0].text)) { // uncached: as measured and truncated directly
+		int w = 0;
+		GFX_measureText(font, text, &w, NULL);
+		if (raw_w)
+			*raw_w = w;
+		if (w + padding > avail) {
+			GFX_truncateText(font, text, out, avail, padding);
+			return true;
+		}
+		strncpy(out, text ? text : "", 255);
+		out[255] = '\0';
+		return false;
+	}
+	Uint32 hash = 2166136261u;
+	for (const unsigned char* c = (const unsigned char*)text; *c; c++)
+		hash = (hash ^ *c) * 16777619u;
+	FitCacheEntry* slot = &fit_cache[0];
+	for (int i = 0; i < FIT_CACHE_SIZE; i++) {
+		FitCacheEntry* e = &fit_cache[i];
+		if (e->font == font && e->hash == hash && e->avail == avail && e->padding == padding &&
+			strcmp(e->text, text) == 0) {
+			e->lru = ++fit_cache_lru;
+			if (raw_w)
+				*raw_w = e->raw_w;
+			strcpy(out, e->fit);
+			return e->truncated;
+		}
+		if (e->lru < slot->lru)
+			slot = e;
+	}
+	FitCacheEntry e = {.font = font, .avail = avail, .padding = padding, .hash = hash};
+	memcpy(e.text, text, len + 1);
+	GFX_measureText(font, text, &e.raw_w, NULL);
+	e.truncated = e.raw_w + padding > avail;
+	if (e.truncated)
+		GFX_truncateText(font, text, e.fit, avail, padding);
+	else
+		memcpy(e.fit, text, len + 1);
+	e.lru = ++fit_cache_lru;
+	*slot = e;
+	if (raw_w)
+		*raw_w = e.raw_w;
+	strcpy(out, e.fit);
+	return e.truncated;
+}
+
 static void GFX_clearTextCache(void) {
 	for (int i = 0; i < TEXT_CACHE_SIZE; i++) {
-		if (text_cache[i].surf)
+		if (text_cache[i].surf) {
+			PLAT_freeSurfaceTexture(text_cache[i].surf); // a List row drew it as a GPU sprite
 			SDL_FreeSurface(text_cache[i].surf);
+		}
 		text_cache[i] = (TextCacheEntry){0};
 	}
 	text_cache_lru = 0;
+	fitCacheForget(NULL);
+}
+
+void GFX_forgetFontText(TTF_Font* font) {
+	if (!font)
+		return;
+	fitCacheForget(font);
+	for (int i = 0; i < TEXT_CACHE_SIZE; i++) {
+		if (text_cache[i].surf && text_cache[i].font == font) {
+			PLAT_freeSurfaceTexture(text_cache[i].surf); // a List row drew it as a GPU sprite
+			SDL_FreeSurface(text_cache[i].surf);
+			text_cache[i] = (TextCacheEntry){0};
+		}
+	}
 }
 
 SDL_Surface* GFX_getCachedText(TTF_Font* font, const char* text, SDL_Color color) {
@@ -364,8 +470,10 @@ SDL_Surface* GFX_getCachedText(TTF_Font* font, const char* text, SDL_Color color
 		return NULL;
 
 	int slot = (free_slot >= 0) ? free_slot : lru_slot;
-	if (text_cache[slot].surf)
+	if (text_cache[slot].surf) {
+		PLAT_freeSurfaceTexture(text_cache[slot].surf); // a List row drew it as a GPU sprite
 		SDL_FreeSurface(text_cache[slot].surf);
+	}
 	text_cache[slot].font = font;
 	text_cache[slot].color = color;
 	strncpy(text_cache[slot].text, text, sizeof(text_cache[slot].text) - 1);
@@ -375,10 +483,32 @@ SDL_Surface* GFX_getCachedText(TTF_Font* font, const char* text, SDL_Color color
 	return surf;
 }
 
+// The path GFX_loadSystemFont last opened, for runtime font caches (common/ui/ui_font.c) that open the same
+// face at other sizes; and their close hook, run before every system-font (re)load (font change)
+// and in GFX_quit so they reopen at the new font/scale.
+static char system_font_path[MAX_PATH];
+static void (*font_reload_hook)(void) = NULL;
+
+const char* GFX_getSystemFontPath(void) {
+	if (!system_font_path[0])
+		snprintf(system_font_path, sizeof(system_font_path), "%s/font1.ttf", RES_PATH);
+	return system_font_path;
+}
+
+void GFX_setFontReloadHook(void (*hook)(void)) {
+	font_reload_hook = hook;
+}
+
 int GFX_loadSystemFont(const char* fontPath) {
 	// Load/Reload fonts
 	if (!TTF_WasInit())
 		TTF_Init();
+
+	// Runtime font caches close first (dropping their cached text), then reopen lazily on fontPath.
+	if (font_reload_hook)
+		font_reload_hook();
+	if (fontPath && fontPath != system_font_path)
+		snprintf(system_font_path, sizeof(system_font_path), "%s", fontPath);
 
 	// Cached text surfaces hold now-dangling font pointers; drop them all.
 	GFX_clearTextCache();
@@ -401,8 +531,7 @@ int GFX_loadSystemFont(const char* fontPath) {
 
 	// Secondary Arabic font (fixed path — independent of the primary UI font).
 	// Missing file => NULL entries => Arabic falls back to primary (tofu), no crash.
-	char arPath[MAX_PATH];
-	snprintf(arPath, sizeof(arPath), "%s/font1-arabic.ttf", RES_PATH);
+	const char* arPath = GFX_getArabicFontPath();
 	TTF_CloseFont(font_ar.xlarge);
 	TTF_CloseFont(font_ar.title);
 	TTF_CloseFont(font_ar.large);
@@ -442,7 +571,7 @@ int GFX_updateColors(void) {
 // Boost the cpufreq policy the platform actually caps (platform.h CPU_FREQ_BASE):
 // on tg5050 that is the big cluster's cpu4, and cpu0's little cluster already sits
 // at its ceiling, so a hardcoded cpu0 path was a silent no-op there. Platforms
-// without a define (desktop) fall back to cpu0, where the W_OK check bails anyway.
+// without a define fall back to cpu0.
 #ifndef CPU_FREQ_BASE
 #define CPU_FREQ_BASE "/sys/devices/system/cpu/cpu0/cpufreq"
 #endif
@@ -553,59 +682,97 @@ static bool GFX_timezoneIsApplied(const char* timezone) {
 }
 
 
-static void GFX_resetNavGlyphs(void);
+// RES_PATH/<stem>@<scale>x.png. A scale with no baked sheet (a uiscale_dev= value being tuned) is drawn from the
+// nearest larger baked one (UIScale_pickSheet), resized once here: nearest-neighbour, which is only ever seen while
+// tuning, since the shipped scales are all baked (scripts/gen-chrome-assets.py, gen-nav-icons.py). NULL when no sheet
+// of `stem` exists.
+static SDL_Surface* GFX_loadScaledSheet(const char* stem, float scale) {
+	char path[MAX_PATH];
+	snprintf(path, sizeof(path), "%s/%s@%gx.png", RES_PATH, stem, scale);
+	if (exists(path))
+		return IMG_Load(path);
+	static const float candidates[] = {3.0f, 2.5f, 2.25f, 2.0f, 1.6875f, 1.5f};
+	float baked[sizeof(candidates) / sizeof(candidates[0])];
+	int n = 0;
+	for (int i = 0; i < (int)(sizeof(candidates) / sizeof(candidates[0])); i++) {
+		snprintf(path, sizeof(path), "%s/%s@%gx.png", RES_PATH, stem, candidates[i]);
+		if (exists(path))
+			baked[n++] = candidates[i];
+	}
+	float from = UIScale_pickSheet(scale, baked, n);
+	if (from <= 0.0f)
+		return NULL;
+	snprintf(path, sizeof(path), "%s/%s@%gx.png", RES_PATH, stem, from);
+	SDL_Surface* src = IMG_Load(path);
+	if (!src)
+		return NULL;
+	int w = (int)lroundf(src->w * scale / from), h = (int)lroundf(src->h * scale / from);
+	SDL_Surface* out = SDL_CreateRGBSurfaceWithFormat(0, w > 0 ? w : 1, h > 0 ? h : 1, 32, SDL_PIXELFORMAT_ARGB8888);
+	if (out) {
+		SDL_SetSurfaceBlendMode(src, SDL_BLENDMODE_NONE);
+		SDL_BlitScaled(src, NULL, out, NULL);
+		LOG_info("[UI] no %s@%gx.png, scaled from @%gx\n", stem, scale, from);
+	}
+	SDL_FreeSurface(src);
+	return out;
+}
 
-// Asset-sheet source rects are in scaled pixels, so they are rebuilt whenever
-// the UI scale changes (GFX_init, GFX_reloadScale).
+// The asset sheet's source rects at `scale`, in that sheet's pixels (FIXED_SCALE, or the indicator's INDICATOR_SCALE).
+static void GFX_initAssetRectsInto(SDL_Rect* rects, float scale) {
+#define AR4(a, b, c, d) (int)((a) * scale + 0.5f), (int)((b) * scale + 0.5f), (int)((c) * scale + 0.5f), (int)((d) * scale + 0.5f)
+	rects[ASSET_WHITE_PILL] = (SDL_Rect){AR4(1, 1, 30, 30)};
+	rects[ASSET_BLACK_PILL] = (SDL_Rect){AR4(33, 1, 30, 30)};
+	rects[ASSET_DARK_GRAY_PILL] = (SDL_Rect){AR4(65, 1, 30, 30)};
+	rects[ASSET_OPTION] = (SDL_Rect){AR4(97, 1, 20, 20)};
+	rects[ASSET_BUTTON] = (SDL_Rect){AR4(1, 33, 20, 20)};
+	rects[ASSET_WHITE_RECT] = (SDL_Rect){AR4(1 + 14, 1, 2, 30)};
+	rects[ASSET_BLACK_RECT] = (SDL_Rect){AR4(33 + 14, 1, 2, 30)};
+	rects[ASSET_DARK_GRAY_RECT] = (SDL_Rect){AR4(65 + 14, 1, 2, 30)};
+	rects[ASSET_OPTION_RECT] = (SDL_Rect){AR4(97 + 9, 1, 2, 20)};
+	rects[ASSET_BUTTON_RECT] = (SDL_Rect){AR4(1 + 9, 33, 2, 20)};
+	rects[ASSET_PAGE_BG] = (SDL_Rect){AR4(64, 33, 15, 15)};
+	rects[ASSET_STATE_BG] = (SDL_Rect){AR4(23, 54, 8, 8)};
+	rects[ASSET_PAGE] = (SDL_Rect){AR4(39, 54, 6, 6)};
+	rects[ASSET_BAR] = (SDL_Rect){AR4(33, 58, 4, 4)};
+	rects[ASSET_BAR_BG] = (SDL_Rect){AR4(33, 58, 4, 4)};
+	rects[ASSET_BAR_BG_MENU] = (SDL_Rect){AR4(33, 58, 4, 4)};
+	rects[ASSET_UNDERLINE] = (SDL_Rect){AR4(85, 51, 3, 3)};
+	rects[ASSET_DOT] = (SDL_Rect){AR4(33, 54, 2, 2)};
+	rects[ASSET_BRIGHTNESS] = (SDL_Rect){AR4(1, 85, 19, 19)};
+	rects[ASSET_COLORTEMP] = (SDL_Rect){AR4(41, 85, 9, 19)};
+	rects[ASSET_VOLUME_MUTE] = (SDL_Rect){AR4(21, 85, 10, 19)};
+	rects[ASSET_VOLUME] = (SDL_Rect){AR4(21, 85, 19, 19)};
+	rects[ASSET_BATTERY] = (SDL_Rect){AR4(47, 51, 17, 10)};
+	rects[ASSET_BATTERY_LOW] = (SDL_Rect){AR4(66, 51, 17, 10)};
+	rects[ASSET_BATTERY_FILL] = (SDL_Rect){AR4(81, 33, 12, 6)};
+	rects[ASSET_BATTERY_FILL_LOW] = (SDL_Rect){AR4(1, 55, 12, 6)};
+	rects[ASSET_BATTERY_BOLT] = (SDL_Rect){AR4(81, 41, 12, 6)};
+	rects[ASSET_BATTERY_CHARGING] = (SDL_Rect){AR4(44, 66, 24, 10)};
+	rects[ASSET_SCROLL_UP] = (SDL_Rect){AR4(97, 23, 24, 6)};
+	rects[ASSET_SCROLL_DOWN] = (SDL_Rect){AR4(97, 31, 24, 6)};
+	rects[ASSET_WIFI] = (SDL_Rect){AR4(1, 104, 12, 12)};
+	rects[ASSET_WIFI_MED] = (SDL_Rect){AR4(14, 104, 12, 12)};
+	rects[ASSET_WIFI_LOW] = (SDL_Rect){AR4(27, 104, 12, 12)};
+	rects[ASSET_WIFI_OFF] = (SDL_Rect){AR4(40, 104, 12, 12)};
+	rects[ASSET_CHECKCIRCLE] = (SDL_Rect){AR4(1, 117, 10, 10)};
+	rects[ASSET_LOCK] = (SDL_Rect){AR4(12, 116, 8, 11)};
+	rects[ASSET_HOLE] = (SDL_Rect){AR4(1, 63, 20, 20)};
+	rects[ASSET_GAMEPAD] = (SDL_Rect){AR4(91, 51, 17, 10)};
+	rects[ASSET_SETTINGS] = (SDL_Rect){AR4(21, 117, 10, 10)};
+	rects[ASSET_STORE] = (SDL_Rect){AR4(66, 117, 10, 10)};
+	rects[ASSET_POWEROFF] = (SDL_Rect){AR4(43, 117, 10, 10)};
+	rects[ASSET_SUSPEND] = (SDL_Rect){AR4(32, 117, 10, 10)};
+	rects[ASSET_RESTART] = (SDL_Rect){AR4(54, 119, 11, 8)};
+	rects[ASSET_SCREENSHOT] = (SDL_Rect){AR4(105, 104, 12, 12)};
+	rects[ASSET_RECORD] = (SDL_Rect){AR4(78, 117, 10, 10)};
+	rects[ASSET_BLUETOOTH] = (SDL_Rect){AR4(53, 104, 12, 12)};
+	rects[ASSET_BLUETOOTH_OFF] = (SDL_Rect){AR4(66, 104, 12, 12)};
+	rects[ASSET_AUDIO] = (SDL_Rect){AR4(79, 104, 12, 12)};
+	rects[ASSET_CONTROLLER] = (SDL_Rect){AR4(92, 104, 12, 12)};
+#undef AR4
+}
 static void GFX_initAssetRects(void) {
-	asset_rects[ASSET_WHITE_PILL] = (SDL_Rect){SCALE4(1, 1, 30, 30)};
-	asset_rects[ASSET_BLACK_PILL] = (SDL_Rect){SCALE4(33, 1, 30, 30)};
-	asset_rects[ASSET_DARK_GRAY_PILL] = (SDL_Rect){SCALE4(65, 1, 30, 30)};
-	asset_rects[ASSET_OPTION] = (SDL_Rect){SCALE4(97, 1, 20, 20)};
-	asset_rects[ASSET_BUTTON] = (SDL_Rect){SCALE4(1, 33, 20, 20)};
-	asset_rects[ASSET_WHITE_RECT] = (SDL_Rect){SCALE4(1 + 14, 1, 2, 30)};
-	asset_rects[ASSET_BLACK_RECT] = (SDL_Rect){SCALE4(33 + 14, 1, 2, 30)};
-	asset_rects[ASSET_DARK_GRAY_RECT] = (SDL_Rect){SCALE4(65 + 14, 1, 2, 30)};
-	asset_rects[ASSET_OPTION_RECT] = (SDL_Rect){SCALE4(97 + 9, 1, 2, 20)};
-	asset_rects[ASSET_BUTTON_RECT] = (SDL_Rect){SCALE4(1 + 9, 33, 2, 20)};
-	asset_rects[ASSET_PAGE_BG] = (SDL_Rect){SCALE4(64, 33, 15, 15)};
-	asset_rects[ASSET_STATE_BG] = (SDL_Rect){SCALE4(23, 54, 8, 8)};
-	asset_rects[ASSET_PAGE] = (SDL_Rect){SCALE4(39, 54, 6, 6)};
-	asset_rects[ASSET_BAR] = (SDL_Rect){SCALE4(33, 58, 4, 4)};
-	asset_rects[ASSET_BAR_BG] = (SDL_Rect){SCALE4(33, 58, 4, 4)};
-	asset_rects[ASSET_BAR_BG_MENU] = (SDL_Rect){SCALE4(33, 58, 4, 4)};
-	asset_rects[ASSET_UNDERLINE] = (SDL_Rect){SCALE4(85, 51, 3, 3)};
-	asset_rects[ASSET_DOT] = (SDL_Rect){SCALE4(33, 54, 2, 2)};
-	asset_rects[ASSET_BRIGHTNESS] = (SDL_Rect){SCALE4(1, 85, 19, 19)};
-	asset_rects[ASSET_COLORTEMP] = (SDL_Rect){SCALE4(41, 85, 9, 19)};
-	asset_rects[ASSET_VOLUME_MUTE] = (SDL_Rect){SCALE4(21, 85, 10, 19)};
-	asset_rects[ASSET_VOLUME] = (SDL_Rect){SCALE4(21, 85, 19, 19)};
-	asset_rects[ASSET_BATTERY] = (SDL_Rect){SCALE4(47, 51, 17, 10)};
-	asset_rects[ASSET_BATTERY_LOW] = (SDL_Rect){SCALE4(66, 51, 17, 10)};
-	asset_rects[ASSET_BATTERY_FILL] = (SDL_Rect){SCALE4(81, 33, 12, 6)};
-	asset_rects[ASSET_BATTERY_FILL_LOW] = (SDL_Rect){SCALE4(1, 55, 12, 6)};
-	asset_rects[ASSET_BATTERY_BOLT] = (SDL_Rect){SCALE4(81, 41, 12, 6)};
-	asset_rects[ASSET_SCROLL_UP] = (SDL_Rect){SCALE4(97, 23, 24, 6)};
-	asset_rects[ASSET_SCROLL_DOWN] = (SDL_Rect){SCALE4(97, 31, 24, 6)};
-	asset_rects[ASSET_WIFI] = (SDL_Rect){SCALE4(1, 104, 12, 12)};
-	asset_rects[ASSET_WIFI_MED] = (SDL_Rect){SCALE4(14, 104, 12, 12)};
-	asset_rects[ASSET_WIFI_LOW] = (SDL_Rect){SCALE4(27, 104, 12, 12)};
-	asset_rects[ASSET_WIFI_OFF] = (SDL_Rect){SCALE4(40, 104, 12, 12)};
-	asset_rects[ASSET_CHECKCIRCLE] = (SDL_Rect){SCALE4(1, 117, 10, 10)};
-	asset_rects[ASSET_LOCK] = (SDL_Rect){SCALE4(12, 116, 8, 11)};
-	asset_rects[ASSET_HOLE] = (SDL_Rect){SCALE4(1, 63, 20, 20)};
-	asset_rects[ASSET_GAMEPAD] = (SDL_Rect){SCALE4(91, 51, 17, 10)};
-	asset_rects[ASSET_SETTINGS] = (SDL_Rect){SCALE4(21, 117, 10, 10)};
-	asset_rects[ASSET_STORE] = (SDL_Rect){SCALE4(66, 117, 10, 10)};
-	asset_rects[ASSET_POWEROFF] = (SDL_Rect){SCALE4(43, 117, 10, 10)};
-	asset_rects[ASSET_SUSPEND] = (SDL_Rect){SCALE4(32, 117, 10, 10)};
-	asset_rects[ASSET_RESTART] = (SDL_Rect){SCALE4(54, 119, 11, 8)};
-	asset_rects[ASSET_SCREENSHOT] = (SDL_Rect){SCALE4(105, 104, 12, 12)};
-	asset_rects[ASSET_RECORD] = (SDL_Rect){SCALE4(78, 117, 10, 10)};
-	asset_rects[ASSET_BLUETOOTH] = (SDL_Rect){SCALE4(53, 104, 12, 12)};
-	asset_rects[ASSET_BLUETOOTH_OFF] = (SDL_Rect){SCALE4(66, 104, 12, 12)};
-	asset_rects[ASSET_AUDIO] = (SDL_Rect){SCALE4(79, 104, 12, 12)};
-	asset_rects[ASSET_CONTROLLER] = (SDL_Rect){SCALE4(92, 104, 12, 12)};
+	GFX_initAssetRectsInto(asset_rects, FIXED_SCALE);
 }
 
 SDL_Surface* GFX_init(int mode) {
@@ -621,13 +788,13 @@ SDL_Surface* GFX_init(int mode) {
 	// TODO: all this doesn't really belong here...
 	// tried adding to PWR_init() but that was no good (not sure why)
 
-	// Resolve the UI scale before CFG_init loads fonts: font= precedes
-	// uiscale= in the file and the font callback sizes every font by
-	// FIXED_SCALE. Done here, not in CFG_init, because config.c is also
-	// linked into tools without platform.c (nextval, poweroff_next).
+	// The device's UI scale (ui_scale.h), resolved before CFG_init loads fonts: the font callback sizes every font
+	// by FIXED_SCALE. Here, not in CFG_init, because config.c is also linked into tools without platform.c
+	// (nextval, poweroff_next).
 	char scale_path[MAX_PATH];
 	snprintf(scale_path, sizeof(scale_path), "%s/minuisettings.txt", SHARED_USERDATA_PATH);
-	ui_scale = UIScale_resolve(UIScale_readFile(scale_path), NATIVE_SCALE);
+	ui_scale = UIScale_resolveDevice(UI_DEVICE_NAME, scale_path);
+	LOG_info("[UI] scale %g (%s)\n", ui_scale, UI_DEVICE_NAME);
 	CFG_init(GFX_loadSystemFont, GFX_updateColors);
 
 	// Reapply only when the volatile symlink is missing or stale. Persisting an
@@ -672,41 +839,13 @@ SDL_Surface* GFX_init(int mode) {
 
 	GFX_initAssetRects();
 
-	char asset_path[MAX_PATH];
-	sprintf(asset_path, "%s/assets@%ix.png", RES_PATH, FIXED_SCALE);
-	if (!exists(asset_path))
-		LOG_info("missing assets, you're about to segfault dummy!\n");
-	gfx.assets = IMG_Load(asset_path);
+	gfx.assets = GFX_loadScaledSheet("assets", FIXED_SCALE);
+	if (!gfx.assets)
+		LOG_info("missing assets@%gx.png, you're about to segfault dummy!\n", FIXED_SCALE);
 
 	PLAT_clearAll();
 
 	return gfx.screen;
-}
-
-int GFX_reloadScale(void) {
-	int next = UIScale_resolve(CFG_getUIScale(), NATIVE_SCALE);
-	if (next == FIXED_SCALE)
-		return 0;
-
-	int prev = ui_scale;
-	ui_scale = next;
-	char asset_path[MAX_PATH];
-	sprintf(asset_path, "%s/assets@%ix.png", RES_PATH, FIXED_SCALE);
-	SDL_Surface* assets = IMG_Load(asset_path);
-	if (!assets) {
-		LOG_info("GFX_reloadScale: %s failed to load, keeping %ix\n", asset_path, prev ? prev : NATIVE_SCALE);
-		ui_scale = prev;
-		return -1;
-	}
-	SDL_FreeSurface(gfx.assets);
-	gfx.assets = assets;
-	GFX_initAssetRects();
-	GFX_resetNavGlyphs();
-
-	char font_path[MAX_PATH];
-	snprintf(font_path, sizeof(font_path), "%s/font1.ttf", RES_PATH);
-	GFX_loadSystemFont(font_path); // also clears the text cache
-	return 0;
 }
 
 SDL_Surface* GFX_getScreen(void) {
@@ -716,16 +855,38 @@ void GFX_setScreen(SDL_Surface* s) {
 	if (s)
 		gfx.screen = s;
 }
+static void hwIndicatorFree(void); // the indicator's baked sheet (below)
+static void pillCachesFree(void);  // the pill strips and atlases (below)
 void GFX_quit(void) {
 	GFX_finishStartupBoost();
 
+	if (font_reload_hook)
+		font_reload_hook(); // runtime font caches close while the TTF state is intact
+
+	// cached text keys on the font pointers closed below
+	GFX_clearTextCache();
+	pillCachesFree();
+	hwIndicatorFree();
+
+	TTF_CloseFont(font.xlarge);
+	TTF_CloseFont(font.title);
 	TTF_CloseFont(font.large);
 	TTF_CloseFont(font.medium);
 	TTF_CloseFont(font.small);
 	TTF_CloseFont(font.tiny);
 	TTF_CloseFont(font.micro);
+	memset(&font, 0, sizeof(font));
+	TTF_CloseFont(font_ar.xlarge);
+	TTF_CloseFont(font_ar.title);
+	TTF_CloseFont(font_ar.large);
+	TTF_CloseFont(font_ar.medium);
+	TTF_CloseFont(font_ar.small);
+	TTF_CloseFont(font_ar.tiny);
+	TTF_CloseFont(font_ar.micro);
+	memset(&font_ar, 0, sizeof(font_ar));
 
 	SDL_FreeSurface(gfx.assets);
+	gfx.assets = NULL;
 
 	CFG_quit();
 
@@ -855,7 +1016,13 @@ void GFX_setAmbientColor(const void* data, unsigned width, unsigned height, size
 	}
 }
 
+static unsigned flip_count = 0;
+unsigned GFX_flipCount(void) {
+	return flip_count;
+}
+
 void GFX_flip(SDL_Surface* screen) {
+	flip_count++;
 	{
 		uint64_t performance_frequency = SDL_GetPerformanceFrequency();
 		uint64_t frame_duration = SDL_GetPerformanceCounter() - per_frame_start;
@@ -981,61 +1148,35 @@ void GFX_sync(void) {
 	}
 }
 
-void GFX_flip_fixed_rate(SDL_Surface* screen, double target_fps) {
+// One schedule for every fixed-rate/scheduled present in the process: Native
+// (GFX_flip_fixed_rate) and Emulated slots share it, so switching between them
+// (e.g. fast-forward under Emulated) keeps the timeline; a change of nominal
+// fps re-anchors it.
+static FlipSchedule flip_schedule;
+
+void GFX_flip_scheduled(SDL_Surface* screen, double slot_s, double target_fps) {
 	if (target_fps == 0.0)
 		target_fps = SCREEN_FPS;
-	double frame_budget_ms = 1000.0 / target_fps;
-
-	static int64_t frame_index = -1;
-	static int64_t first_frame_start_time = 0;
-	static double last_target_fps = 0.0;
 
 	int64_t perf_freq = SDL_GetPerformanceFrequency();
 	int64_t now = SDL_GetPerformanceCounter();
+	int64_t nominal = perf_freq / target_fps;
+	int64_t slot = (int64_t)(slot_s * perf_freq);
+	int64_t time_of_frame = FlipSchedule_next(&flip_schedule, now, slot, nominal);
 
-	if (++frame_index == 0 || target_fps != last_target_fps) {
-		frame_index = 0;
-		first_frame_start_time = now;
-		last_target_fps = target_fps;
-	}
+	if (time_of_frame > now) {
+		useconds_t time_to_sleep_us = (useconds_t)((time_of_frame - now) * 1e6 / perf_freq);
 
-	int64_t frame_duration = perf_freq / target_fps;
-	int64_t time_of_frame = first_frame_start_time + frame_index * frame_duration;
-	int64_t offset = now - time_of_frame;
-	const int max_lost_frames = 2;
-
-	// printf("%s: frame #%lld, time is %lld, scheduled at %lld, offset is %lld\n",
-	// 	__FUNCTION__,
-	// 	frame_index,
-	// 	now,
-	// 	time_of_frame,
-	// 	now - time_of_frame);
-
-	if (offset > 0) {
-		if (offset > max_lost_frames * frame_duration) {
-			frame_index = -1;
-			last_target_fps = 0.0;
-			LOG_debug("%s: lost sync by more than %d frames (late) @%llu -> reset\n\n", __FUNCTION__, max_lost_frames, SDL_GetPerformanceCounter());
+		// The OS scheduling algorithm cannot guarantee that
+		// the sleep will last the exact amount of requested time.
+		// We sleep as much as we can using the OS primitive.
+		const useconds_t min_waiting_time = 2000;
+		if (time_to_sleep_us > min_waiting_time) {
+			usleep(time_to_sleep_us - min_waiting_time);
 		}
-	} else {
-		if (offset < -max_lost_frames * frame_duration) {
-			frame_index = -1;
-			last_target_fps = 0.0;
-			LOG_debug("%s: lost sync by more than %d frames (early ?!) @%llu -> reset\n\n", __FUNCTION__, max_lost_frames, SDL_GetPerformanceCounter());
-		} else if (offset < 0) {
-			useconds_t time_to_sleep_us = (useconds_t)((time_of_frame - now) * 1e6 / perf_freq);
 
-			// The OS scheduling algorithm cannot guarantee that
-			// the sleep will last the exact amount of requested time.
-			// We sleep as much as we can using the OS primitive.
-			const useconds_t min_waiting_time = 2000;
-			if (time_to_sleep_us > min_waiting_time) {
-				usleep(time_to_sleep_us - min_waiting_time);
-			}
-
-			while (SDL_GetPerformanceCounter() < time_of_frame) {
-				// nothing...
-			}
+		while (SDL_GetPerformanceCounter() < time_of_frame) {
+			// nothing...
 		}
 	}
 	PLAT_GL_Swap();
@@ -1045,7 +1186,9 @@ void GFX_flip_fixed_rate(SDL_Surface* screen, double target_fps) {
 
 	// Stats logic
 	double frame_ms = elapsed_time_s * 1000.0;
-	double target_ms = 1000.0 / target_fps;
+	// a GPU core's present covers slot_s of game time (two frames for a 30 fps
+	// game): measure drops and jitter against that, not against 1/fps
+	double target_ms = slot_s > 0 ? slot_s * 1000.0 : 1000.0 / target_fps;
 	perf.jitter = fabs(frame_ms - target_ms);
 
 	if (frame_ms > target_ms * 1.1) {
@@ -1082,6 +1225,12 @@ void GFX_flip_fixed_rate(SDL_Surface* screen, double target_fps) {
 		perf.max_frame_ms = perf.avg_frame_ms;
 	}
 	per_frame_start = SDL_GetPerformanceCounter();
+}
+
+void GFX_flip_fixed_rate(SDL_Surface* screen, double target_fps) {
+	if (target_fps == 0.0)
+		target_fps = SCREEN_FPS;
+	GFX_flip_scheduled(screen, 1.0 / target_fps, target_fps);
 }
 
 // if a fake vsycn delay is really needed
@@ -1505,6 +1654,172 @@ static int pill_rect_asset(int asset) {
 	}
 }
 
+// A pill's middle, the asset's middle slice (a column profile, the same across x) stretched to a strip PILL_STRIP_W
+// wide at the pill's height and tinted: built once per asset, height and colour, then tiled across the middle with
+// plain blits. The direct way, a tinted SDL_BlitScaled, takes SDL's slow per-pixel path (scaled + modulated + blended):
+// ~2 ms a frame for a list's selection pill on the Brick.
+#define PILL_STRIP_W 64
+#define PILL_STRIPS 4
+static struct {
+	SDL_Surface* src; // the assets surface it was cut from (a reload makes a new one)
+	int slice, h;
+	uint32_t color;
+	SDL_Surface* strip;
+	uint32_t lru;
+} pill_strips[PILL_STRIPS];
+static uint32_t pill_strip_lru = 0;
+
+static SDL_Surface* pillStrip(int slice, int h, uint32_t color) {
+	SDL_Surface* src = gfx.assets;
+	int victim = 0;
+	for (int i = 0; i < PILL_STRIPS; i++) {
+		if (pill_strips[i].strip && pill_strips[i].src == src && pill_strips[i].slice == slice &&
+			pill_strips[i].h == h && pill_strips[i].color == color) {
+			pill_strips[i].lru = ++pill_strip_lru;
+			return pill_strips[i].strip;
+		}
+		if (pill_strips[i].lru < pill_strips[victim].lru)
+			victim = i;
+	}
+	SDL_Surface* strip = SDL_CreateRGBSurfaceWithFormat(0, PILL_STRIP_W, h, 32, SDL_PIXELFORMAT_ARGB8888);
+	if (!strip)
+		return NULL;
+	SDL_FillRect(strip, NULL, 0);
+	// the slice copied in (no blend), tinted as the direct blit would tint it
+	TintRestore keep = tint_begin(src, color == RGB_WHITE ? 0xFFFFFFFF : asset_color_to_rgba(color));
+	SDL_SetSurfaceBlendMode(src, SDL_BLENDMODE_NONE);
+	SDL_BlitScaled(src, &asset_rects[slice], strip, NULL);
+	tint_end(src, keep);
+	SDL_SetSurfaceBlendMode(strip, SDL_BLENDMODE_BLEND);
+	if (pill_strips[victim].strip)
+		SDL_FreeSurface(pill_strips[victim].strip);
+	pill_strips[victim].src = src;
+	pill_strips[victim].slice = slice;
+	pill_strips[victim].h = h;
+	pill_strips[victim].color = color;
+	pill_strips[victim].strip = strip;
+	pill_strips[victim].lru = ++pill_strip_lru;
+	return strip;
+}
+
+// A pill as GPU sprites (a List drawn on the GPU): its left cap, middle strip and right cap tinted once into one small
+// atlas per asset, height and colour, then three sprites, the strip stretched across the middle by the GPU (its
+// columns are all alike, so that is exact). Same pixels as GFX_blitPillColor's blits.
+#define PILL_ATLASES 6 // drawn-cap heights (ui_pill_cap.h) share them with the GPU path
+static struct {
+	SDL_Surface* src;
+	int asset, h, r;
+	uint32_t color;
+	SDL_Surface* atlas; // [left cap r | strip PILL_STRIP_W | right cap r] x h
+	uint32_t lru;
+} pill_atlases[PILL_ATLASES];
+static uint32_t pill_atlas_lru = 0;
+
+// A pill's two end caps drawn at height h (ui_pill_cap.h) into an ARGB8888 surface: the left one at x 0, the right one
+// at right_x, both r wide, in the tint `rgba` with the coverage as alpha. For a pill shorter (or taller) than the asset
+// sheet's, whose caps can't be cut from it.
+static void pillCapsDraw(SDL_Surface* dst, int r, int h, uint32_t rgba, int right_x) {
+	if (SDL_MUSTLOCK(dst))
+		SDL_LockSurface(dst);
+	for (int y = 0; y < h; y++) {
+		uint32_t* row = (uint32_t*)((uint8_t*)dst->pixels + y * dst->pitch);
+		for (int x = 0; x < r; x++) {
+			uint32_t al = PillCap_coverage(r, h, x, y, true) * RGBA_a(rgba) / 255;
+			uint32_t ar = PillCap_coverage(r, h, x, y, false) * RGBA_a(rgba) / 255;
+			uint32_t rgb = (uint32_t)RGBA_r(rgba) << 16 | (uint32_t)RGBA_g(rgba) << 8 | RGBA_b(rgba);
+			row[x] = al << 24 | rgb;
+			row[right_x + x] = ar << 24 | rgb;
+		}
+	}
+	if (SDL_MUSTLOCK(dst))
+		SDL_UnlockSurface(dst);
+}
+
+static SDL_Surface* pillAtlas(int asset, int h, uint32_t color, int* r_out) {
+	int slice = pill_rect_asset(asset);
+	int r = h / 2;
+	if (slice < 0 || r <= 0)
+		return NULL;
+	SDL_Surface* src = gfx.assets;
+	int victim = 0;
+	for (int i = 0; i < PILL_ATLASES; i++) {
+		if (pill_atlases[i].atlas && pill_atlases[i].src == src && pill_atlases[i].asset == asset &&
+			pill_atlases[i].h == h && pill_atlases[i].color == color) {
+			pill_atlases[i].lru = ++pill_atlas_lru;
+			*r_out = pill_atlases[i].r;
+			return pill_atlases[i].atlas;
+		}
+		if (pill_atlases[i].lru < pill_atlases[victim].lru)
+			victim = i;
+	}
+	SDL_Surface* strip = pillStrip(slice, h, color);
+	SDL_Surface* atlas = strip ? SDL_CreateRGBSurfaceWithFormat(0, 2 * r + PILL_STRIP_W, h, 32, SDL_PIXELFORMAT_ARGB8888)
+							   : NULL;
+	if (!atlas)
+		return NULL;
+	SDL_FillRect(atlas, NULL, 0);
+	// the caps copied in (no blend) as GFX_blitAssetColor tints them
+	SDL_Rect* ar = &asset_rects[asset];
+	uint32_t rgba = color == RGB_WHITE ? 0xFFFFFFFF : asset_color_to_rgba(color);
+	if (h != ar->h) { // a pill the sheet's caps don't fit: drawn
+		pillCapsDraw(atlas, r, h, rgba, r + PILL_STRIP_W);
+	} else {
+		TintRestore keep = tint_begin(src, rgba);
+		SDL_SetSurfaceBlendMode(src, SDL_BLENDMODE_NONE);
+		SDL_BlitSurface(src, &(SDL_Rect){ar->x, ar->y, r, h}, atlas, &(SDL_Rect){0, 0});
+		SDL_BlitSurface(src, &(SDL_Rect){ar->x + r, ar->y, r, h}, atlas, &(SDL_Rect){r + PILL_STRIP_W, 0});
+		tint_end(src, keep);
+	}
+	SDL_SetSurfaceBlendMode(strip, SDL_BLENDMODE_NONE);
+	SDL_BlitSurface(strip, NULL, atlas, &(SDL_Rect){r, 0});
+	SDL_SetSurfaceBlendMode(strip, SDL_BLENDMODE_BLEND);
+	SDL_SetSurfaceBlendMode(atlas, SDL_BLENDMODE_BLEND);
+	if (pill_atlases[victim].atlas) {
+		PLAT_freeSurfaceTexture(pill_atlases[victim].atlas);
+		SDL_FreeSurface(pill_atlases[victim].atlas);
+	}
+	pill_atlases[victim].src = src;
+	pill_atlases[victim].asset = asset;
+	pill_atlases[victim].h = h;
+	pill_atlases[victim].r = r;
+	pill_atlases[victim].color = color;
+	pill_atlases[victim].atlas = atlas;
+	pill_atlases[victim].lru = ++pill_atlas_lru;
+	*r_out = r;
+	return atlas;
+}
+
+bool GFX_pillSprites(int asset, const SDL_Rect* rect, uint32_t asset_color, const SDL_Rect* clip) {
+	int h = rect->h ? rect->h : asset_rects[asset].h;
+	int r = 0;
+	SDL_Surface* atlas = pillAtlas(asset, h, asset_color, &r);
+	SDL_Texture* tex = atlas ? PLAT_textureForSurface(atlas) : NULL;
+	if (!tex)
+		return false;
+	int w = rect->w < h ? h : rect->w; // as GFX_blitPillColor: never narrower than its two caps
+	int x = rect->x, y = rect->y, mid = w - h;
+	PLAT_spriteAdd(tex, &(SDL_Rect){0, 0, r, h}, &(SDL_Rect){x, y, r, h}, 255, clip);
+	if (mid > 0)
+		PLAT_spriteAdd(tex, &(SDL_Rect){r, 0, PILL_STRIP_W, h}, &(SDL_Rect){x + r, y, mid, h}, 255, clip);
+	PLAT_spriteAdd(tex, &(SDL_Rect){r + PILL_STRIP_W, 0, r, h}, &(SDL_Rect){x + r + (mid > 0 ? mid : 0), y, r, h}, 255,
+				   clip);
+	return true;
+}
+
+static void pillCachesFree(void) {
+	for (int i = 0; i < PILL_ATLASES; i++) {
+		if (pill_atlases[i].atlas) {
+			PLAT_freeSurfaceTexture(pill_atlases[i].atlas);
+			SDL_FreeSurface(pill_atlases[i].atlas);
+		}
+	}
+	memset(pill_atlases, 0, sizeof(pill_atlases));
+	for (int i = 0; i < PILL_STRIPS; i++)
+		if (pill_strips[i].strip)
+			SDL_FreeSurface(pill_strips[i].strip);
+	memset(pill_strips, 0, sizeof(pill_strips));
+}
+
 void GFX_blitPillColor(int asset, SDL_Surface* dst, SDL_Rect* dst_rect, uint32_t asset_color, uint32_t fill_color) {
 	(void)fill_color; // kept for API compatibility; middles use asset_color
 	int x = dst_rect->x;
@@ -1515,6 +1830,21 @@ void GFX_blitPillColor(int asset, SDL_Surface* dst, SDL_Rect* dst_rect, uint32_t
 	if (h == 0)
 		h = asset_rects[asset].h;
 
+	if (h != asset_rects[asset].h) { // shorter (or taller) than the sheet's pill: from the drawn-cap atlas
+		int ar = 0;
+		SDL_Surface* atlas = pillAtlas(asset, h, asset_color, &ar);
+		if (atlas) {
+			int aw = w < 2 * ar ? 2 * ar : w, mid = aw - 2 * ar;
+			SDL_BlitSurface(atlas, &(SDL_Rect){0, 0, ar, h}, dst, &(SDL_Rect){x, y});
+			for (int sx = 0; sx < mid; sx += PILL_STRIP_W) {
+				int sw = mid - sx < PILL_STRIP_W ? mid - sx : PILL_STRIP_W;
+				SDL_BlitSurface(atlas, &(SDL_Rect){ar, 0, sw, h}, dst, &(SDL_Rect){x + ar + sx, y});
+			}
+			SDL_BlitSurface(atlas, &(SDL_Rect){ar + PILL_STRIP_W, 0, ar, h}, dst, &(SDL_Rect){x + ar + mid, y});
+			return;
+		}
+	}
+
 	int r = h / 2;
 	if (w < h)
 		w = h;
@@ -1524,7 +1854,13 @@ void GFX_blitPillColor(int asset, SDL_Surface* dst, SDL_Rect* dst_rect, uint32_t
 	x += r;
 	if (w > 0) {
 		int slice = pill_rect_asset(asset);
-		if (slice >= 0)
+		SDL_Surface* strip = slice >= 0 ? pillStrip(slice, h, asset_color) : NULL;
+		if (strip) {
+			for (int sx = 0; sx < w; sx += PILL_STRIP_W) {
+				int sw = w - sx < PILL_STRIP_W ? w - sx : PILL_STRIP_W;
+				SDL_BlitSurface(strip, &(SDL_Rect){0, 0, sw, h}, dst, &(SDL_Rect){x + sx, y});
+			}
+		} else if (slice >= 0)
 			GFX_blitSurfaceColorScaled(gfx.assets, &asset_rects[slice], dst, &(SDL_Rect){x, y, w, h}, asset_color);
 		else
 			GFX_fillRectColor(dst, &(SDL_Rect){x, y, w, h}, asset_color);
@@ -1552,8 +1888,10 @@ void GFX_blitRectColor(int asset, SDL_Surface* dst, SDL_Rect* dst_rect, uint32_t
 	int h = dst_rect->h;
 
 	SDL_Rect* rect = &asset_rects[asset];
-	int d = rect->w;
-	int r = d / 2;
+	// the corners are r square; the fills span what they leave (2r, not the art's width: at a fractional scale the
+	// art can be odd-sized, e.g. 49 px at 2.4375, and w - d left a 1 px gap through the middle)
+	int r = rect->w / 2;
+	int d = 2 * r;
 
 	GFX_blitAssetColor(asset, &(SDL_Rect){0, 0, r, r}, dst, &(SDL_Rect){x, y}, asset_color);
 	GFX_fillRectColor(dst, &(SDL_Rect){x + r, y, w - d, r}, asset_color);
@@ -1607,19 +1945,10 @@ static struct NavGlyph {
 	{"START", "nav_button_start", NAV_LABEL, NULL, 0},
 	{"SELECT", "nav_button_select", NAV_LABEL, NULL, 0},
 	{"LEFT/RIGHT", "nav_dpad_horizontal", NAV_IMAGE, NULL, 0},
-	{"UP/DOWN", "nav_dpad_vertical", NAV_IMAGE, NULL, 0},
 };
-// Glyph PNGs are per-scale (@2x/@3x); drop them so the next lookup loads the
-// current scale.
-static void GFX_resetNavGlyphs(void) {
-	for (int i = 0; i < (int)(sizeof(nav_glyphs) / sizeof(nav_glyphs[0])); i++) {
-		if (nav_glyphs[i].surf)
-			SDL_FreeSurface(nav_glyphs[i].surf);
-		nav_glyphs[i].surf = NULL;
-		nav_glyphs[i].tried = 0;
-	}
-}
-static struct NavGlyph* GFX_getNavGlyph(const char* button) {
+// The glyph surface for `button` at FIXED_SCALE, or NULL when the button has no art (the drawn fallback). Baked per
+// device scale (scripts/gen-nav-icons.py): @3x, @2.5x and @2.25x.
+static SDL_Surface* GFX_getNavGlyph(const char* button) {
 	if (!button || !button[0])
 		return NULL;
 	for (int i = 0; i < (int)(sizeof(nav_glyphs) / sizeof(nav_glyphs[0])); i++) {
@@ -1627,44 +1956,44 @@ static struct NavGlyph* GFX_getNavGlyph(const char* button) {
 		if (strcmp(button, g->key) != 0)
 			continue;
 		if (g->surf)
-			return g;
+			return g->surf;
 		if (g->tried)
 			return NULL; // asset absent on device — use the drawn fallback
 		g->tried = 1;
-		char path[MAX_PATH];
-		sprintf(path, "%s/%s@%ix.png", RES_PATH, g->file, FIXED_SCALE);
-		SDL_Surface* s = IMG_Load(path);
-		if (s) {
-			SDL_SetSurfaceBlendMode(s, SDL_BLENDMODE_BLEND);
-			g->surf = s;
-			return g;
-		}
-		return NULL;
+		g->surf = GFX_loadScaledSheet(g->file, FIXED_SCALE);
+		if (g->surf)
+			SDL_SetSurfaceBlendMode(g->surf, SDL_BLENDMODE_BLEND);
+		return g->surf;
 	}
 	return NULL;
 }
-int GFX_getButtonWidth(char* hint, char* button) {
+// A button hint drawn at `scale` (FIXED_SCALE): its glyphs, sizes and label font
+// (`tiny`, FONT_TINY at that scale).
+static int GFX_getButtonWidthAt(char* hint, char* button, float scale, TTF_Font* tiny) {
 	int button_width = 0;
 	int width;
-	int btn_sz = SCALE1(BUTTON_SIZE);
+	int btn_sz = (int)(scale * BUTTON_SIZE + 0.5f);
 
 	button = (char*)PAD_buttonLabel(button);
 
-	struct NavGlyph* g = GFX_getNavGlyph(button);
-	if (g) {
-		button_width += g->surf->w; // both styles advance by the glyph width
+	SDL_Surface* glyph = GFX_getNavGlyph(button);
+	if (glyph) {
+		button_width += glyph->w; // both styles advance by the glyph width
 	} else if (strlen(button) == 1) {
 		button_width += btn_sz;
 	} else {
 		button_width += btn_sz / 2;
-		GFX_measureText(font.tiny, button, &width, NULL);
+		GFX_measureText(tiny, button, &width, NULL);
 		button_width += width;
 	}
-	button_width += SCALE1(BUTTON_TEXT_GAP);
+	button_width += (int)(scale * BUTTON_TEXT_GAP + 0.5f);
 
-	GFX_measureText(font.tiny, hint, &width, NULL);
+	GFX_measureText(tiny, hint, &width, NULL);
 	button_width += width;
 	return button_width;
+}
+int GFX_getButtonWidth(char* hint, char* button) {
+	return GFX_getButtonWidthAt(hint, button, FIXED_SCALE, font.tiny);
 }
 static uint32_t gfx_px_get(SDL_Surface* s, int x, int y) {
 	uint8_t* p = (uint8_t*)s->pixels + y * s->pitch + x * s->format->BytesPerPixel;
@@ -1743,10 +2072,11 @@ static void GFX_drawFilledRoundedRect(SDL_Surface* sur, int x, int y, int w, int
 	if (SDL_MUSTLOCK(sur))
 		SDL_UnlockSurface(sur);
 }
-void GFX_blitButton(char* hint, char* button, SDL_Surface* dst, SDL_Rect* dst_rect) {
+static void GFX_blitButtonAt(char* hint, char* button, SDL_Surface* dst, SDL_Rect* dst_rect, float scale,
+							 TTF_Font* tiny) {
 	SDL_Surface* text;
 	int ox = 0;
-	int btn_sz = SCALE1(BUTTON_SIZE);
+	int btn_sz = (int)(scale * BUTTON_SIZE + 0.5f);
 
 	button = (char*)PAD_buttonLabel(button);
 	// Drawn fallback (any button with no nav_*.png glyph, e.g. "L1/R1" combo
@@ -1756,13 +2086,12 @@ void GFX_blitButton(char* hint, char* button, SDL_Surface* dst, SDL_Rect* dst_re
 	Uint32 btn_color = SDL_MapRGB(dst->format, TRIAD_WHITE);
 
 	// button
-	struct NavGlyph* g = GFX_getNavGlyph(button);
-	if (g) {
+	SDL_Surface* glyph = GFX_getNavGlyph(button);
+	if (glyph) {
 		// Show every glyph in its native colours (white masks; the d-pad's
 		// white + red) with no tint, so the button hint matches the white
 		// description text. Disc glyphs read as a white disc with the symbol
 		// knocked out; the .style field is kept for reference only.
-		SDL_Surface* glyph = g->surf;
 		int gy = dst_rect->y + (btn_sz - glyph->h) / 2;
 		GFX_blitSurfaceColor(glyph, NULL, dst, &(SDL_Rect){dst_rect->x, gy}, RGB_WHITE);
 		ox += glyph->w;
@@ -1770,12 +2099,12 @@ void GFX_blitButton(char* hint, char* button, SDL_Surface* dst, SDL_Rect* dst_re
 		GFX_drawFilledCircle(dst, dst_rect->x + btn_sz / 2, dst_rect->y + btn_sz / 2, btn_sz / 2, btn_color);
 
 		// label (cached — hint bars redraw every frame during list animation)
-		text = GFX_getCachedText(font.tiny, button, COLOR_BLACK);
+		text = GFX_getCachedText(tiny, button, COLOR_BLACK);
 		if (text)
 			SDL_BlitSurface(text, NULL, dst, &(SDL_Rect){dst_rect->x + (btn_sz - text->w) / 2, dst_rect->y + (btn_sz - text->h) / 2});
 		ox += btn_sz;
 	} else {
-		text = GFX_getCachedText(font.tiny, button, COLOR_BLACK);
+		text = GFX_getCachedText(tiny, button, COLOR_BLACK);
 		int pill_w = btn_sz / 2 + (text ? text->w : 0);
 		GFX_drawFilledRoundedRect(dst, dst_rect->x, dst_rect->y, pill_w, btn_sz, btn_color);
 		ox += btn_sz / 4;
@@ -1787,13 +2116,16 @@ void GFX_blitButton(char* hint, char* button, SDL_Surface* dst, SDL_Rect* dst_re
 		ox += btn_sz / 4;
 	}
 
-	ox += SCALE1(BUTTON_TEXT_GAP);
+	ox += (int)(scale * BUTTON_TEXT_GAP + 0.5f);
 
 	// hint text (cached; colour is part of the cache key so theme changes are safe)
 	SDL_Color text_color = uintToColour(THEME_COLOR6_255);
-	text = GFX_getCachedText(font.tiny, hint, text_color);
+	text = GFX_getCachedText(tiny, hint, text_color);
 	if (text)
 		SDL_BlitSurface(text, NULL, dst, &(SDL_Rect){ox + dst_rect->x, dst_rect->y + (btn_sz - text->h) / 2, text->w, text->h});
+}
+void GFX_blitButton(char* hint, char* button, SDL_Surface* dst, SDL_Rect* dst_rect) {
+	GFX_blitButtonAt(hint, button, dst, dst_rect, FIXED_SCALE, font.tiny);
 }
 void GFX_blitMessage(TTF_Font* font, char* msg, SDL_Surface* dst, SDL_Rect* dst_rect) {
 	if (!dst_rect)
@@ -1847,12 +2179,44 @@ void GFX_blitMessage(TTF_Font* font, char* msg, SDL_Surface* dst, SDL_Rect* dst_
 	}
 }
 
+// The drawing scale while GFX_blitHardwareIndicatorFixed draws the indicator at INDICATOR_SCALE (0: FIXED_SCALE, as for
+// every other caller of the helpers below).
+static float hw_scale = 0;
+#define HW1(a) (hw_scale > 0 ? (int)((a) * hw_scale + 0.5f) : SCALE1(a))
+
+// While charging with the percentage shown, the battery is the wider ASSET_BATTERY_CHARGING: the bolt alone would
+// leave no room for the number.
+static int batteryShowsChargingPercent(int is_charging) {
+	return is_charging && CFG_getShowBatteryPercent();
+}
+
+// The battery glyph's rect as GFX_blitBatteryAtPosition draws it now, for laying out the status group around it.
+static SDL_Rect batteryRect(void) {
+	return asset_rects[batteryShowsChargingPercent(SDL_AtomicGet(&pwr.is_charging)) ? ASSET_BATTERY_CHARGING
+																					: ASSET_BATTERY];
+}
+
 void GFX_blitBatteryAtPosition(SDL_Surface* dst, int x, int y) {
 	SDL_Rect battery_rect = asset_rects[ASSET_BATTERY];
+	int is_charging = SDL_AtomicGet(&pwr.is_charging);
 
-	if (SDL_AtomicGet(&pwr.is_charging)) {
+	if (batteryShowsChargingPercent(is_charging)) {
+		SDL_Rect charging_rect = asset_rects[ASSET_BATTERY_CHARGING];
+		GFX_blitAssetColor(ASSET_BATTERY_CHARGING, NULL, dst, &(SDL_Rect){x, y}, THEME_COLOR6);
+
+		char percentage[16];
+		sprintf(percentage, "%i", SDL_AtomicGet(&pwr.charge));
+		SDL_Surface* text = GFX_renderText(font.micro, percentage, uintToColour(THEME_COLOR6_255));
+		// centred in the space right of the bolt (the glyph's units 7 to 23)
+		int left = HW1(7);
+		SDL_Rect target = {
+			x + left + (charging_rect.w - left - HW1(1) - text->w) / 2,
+			y + (charging_rect.h - text->h) / 2 - 1};
+		SDL_BlitSurface(text, NULL, dst, &target);
+		SDL_FreeSurface(text);
+	} else if (is_charging) {
 		GFX_blitAssetColor(ASSET_BATTERY, NULL, dst, &(SDL_Rect){x, y}, THEME_COLOR6);
-		GFX_blitAssetColor(ASSET_BATTERY_BOLT, NULL, dst, &(SDL_Rect){x + SCALE1(3), y + SCALE1(2)}, THEME_COLOR6);
+		GFX_blitAssetColor(ASSET_BATTERY_BOLT, NULL, dst, &(SDL_Rect){x + HW1(3), y + HW1(2)}, THEME_COLOR6);
 	} else {
 		int percent = SDL_AtomicGet(&pwr.charge);
 		GFX_blitAssetColor(percent <= 10 ? ASSET_BATTERY_LOW : ASSET_BATTERY, NULL, dst, &(SDL_Rect){x, y}, THEME_COLOR6);
@@ -1875,7 +2239,7 @@ void GFX_blitBatteryAtPosition(SDL_Surface* dst, int x, int y) {
 				clip.x = fill_rect.w - clip.w;
 				clip.y = 0;
 				GFX_blitAssetColor(percent <= 20 ? ASSET_BATTERY_FILL_LOW : ASSET_BATTERY_FILL, &clip, dst,
-								   &(SDL_Rect){x + SCALE1(3) + clip.x, y + SCALE1(2)}, THEME_COLOR6);
+								   &(SDL_Rect){x + HW1(3) + clip.x, y + HW1(2)}, THEME_COLOR6);
 			}
 		}
 	}
@@ -1889,12 +2253,12 @@ int GFX_blitHardwareIndicator(SDL_Surface* dst, int x, int y, IndicatorType indi
 	int setting_max;
 	int asset;
 
-	int ow = SCALE1(HW_INDICATOR_WIDTH);
+	int ow = HW1(HW_INDICATOR_WIDTH);
 	int ox = x;
 	int oy = y;
 
 	// Draw the pill background
-	GFX_blitPillLight(ASSET_WHITE_PILL, dst, &(SDL_Rect){ox, oy, ow, SCALE1(PILL_SIZE)});
+	GFX_blitPillLight(ASSET_WHITE_PILL, dst, &(SDL_Rect){ox, oy, ow, HW1(PILL_SIZE)});
 
 	// Determine which setting to display
 	if (indicator_type == INDICATOR_BRIGHTNESS) {
@@ -1922,20 +2286,20 @@ int GFX_blitHardwareIndicator(SDL_Surface* dst, int x, int y, IndicatorType indi
 	// Draw the icon
 	SDL_Rect asset_rect;
 	GFX_assetRect(asset, &asset_rect);
-	int ax = ox + (SCALE1(PILL_SIZE) - asset_rect.w) / 2;
-	int ay = oy + (SCALE1(PILL_SIZE) - asset_rect.h) / 2;
+	int ax = ox + (HW1(PILL_SIZE) - asset_rect.w) / 2;
+	int ay = oy + (HW1(PILL_SIZE) - asset_rect.h) / 2;
 	GFX_blitAssetColor(asset, NULL, dst, &(SDL_Rect){ax, ay}, THEME_COLOR6);
 
 	// Draw the progress bar background
-	ox += SCALE1(PILL_SIZE);
-	int bar_y = y + SCALE1((PILL_SIZE - SETTINGS_SIZE) / 2);
+	ox += HW1(PILL_SIZE);
+	int bar_y = y + HW1((PILL_SIZE - SETTINGS_SIZE) / 2);
 	GFX_blitPillColor(gfx.mode == MODE_MAIN ? ASSET_BAR_BG : ASSET_BAR_BG_MENU, dst,
-					  &(SDL_Rect){ox, bar_y, SCALE1(SETTINGS_WIDTH), SCALE1(SETTINGS_SIZE)}, THEME_COLOR3, RGB_WHITE);
+					  &(SDL_Rect){ox, bar_y, HW1(SETTINGS_WIDTH), HW1(SETTINGS_SIZE)}, THEME_COLOR3, RGB_WHITE);
 
 	// Draw the progress bar fill
 	float percent = ((float)(setting_value - setting_min) / (setting_max - setting_min));
 	if (indicator_type == 1 || indicator_type == 3 || setting_value > 0) {
-		GFX_blitPillDark(ASSET_BAR, dst, &(SDL_Rect){ox, bar_y, SCALE1(SETTINGS_WIDTH) * percent, SCALE1(SETTINGS_SIZE)});
+		GFX_blitPillDark(ASSET_BAR, dst, &(SDL_Rect){ox, bar_y, HW1(SETTINGS_WIDTH) * percent, HW1(SETTINGS_SIZE)});
 	}
 
 	return ow;
@@ -1950,17 +2314,21 @@ SDL_Surface* GFX_createScreenFormatSurface(int width, int height) {
 		gfx.screen->format->format);
 }
 
-int GFX_blitHardwareGroup(SDL_Surface* dst, IndicatorType show_setting) {
+// The status group drawn at the current scale (HW1), its icons centred in a bar_h band whose top is y0.
+static int hardwareGroupDraw(SDL_Surface* dst, IndicatorType show_setting, int y0) {
 	int ox;
 	int ow = 0;
 
-	int bar_h = SCALE1(BUTTON_SIZE) + SCALE1(BUTTON_MARGIN * 2);
+	int bar_h = HW1(BUTTON_SIZE) + HW1(BUTTON_MARGIN * 2);
+	// the right inset: the screen's edge padding, as the hint bar's left one
+	int pad = SCALE1(PADDING);
 
 	if (show_setting && !GetHDMI()) {
-		// Use the helper function to render the indicator at the standard position
-		ow = SCALE1(HW_INDICATOR_WIDTH);
-		ox = dst->w - SCALE1(PADDING) - ow;
-		GFX_blitHardwareIndicator(dst, ox, 0, (IndicatorType)show_setting);
+		// the indicator keeps its own size (INDICATOR_SCALE), centred in the top bar
+		int oh;
+		GFX_hardwareIndicatorSize(&ow, &oh);
+		ox = dst->w - pad - ow;
+		GFX_blitHardwareIndicatorFixed(dst, ox, (BAR_HEIGHT - oh) / 2, (IndicatorType)show_setting);
 	} else {
 		ConnectionStrength strength = PLAT_connectionStrength();
 		int show_wifi = strength > SIGNAL_STRENGTH_OFF;
@@ -1973,45 +2341,45 @@ int GFX_blitHardwareGroup(SDL_Surface* dst, IndicatorType show_setting) {
 		int show_cap = 0;
 		int show_rec = 0;
 		PWR_captureStatus(&show_cap, &show_rec);
-		SDL_Rect battery_rect = asset_rects[ASSET_BATTERY];
+		SDL_Rect battery_rect = batteryRect();
 
 		if (!show_ext_audio && !show_bt_controller && !show_wifi && !show_clock && !show_cap && !show_rec) {
-			ow = battery_rect.w + SCALE1(BUTTON_MARGIN * 2);
-			ox = dst->w - SCALE1(PADDING) - ow;
+			ow = battery_rect.w + HW1(BUTTON_MARGIN * 2);
+			ox = dst->w - pad - ow;
 
 			int battery_x = ox + (ow - battery_rect.w) / 2;
-			int battery_y = (bar_h - battery_rect.h) / 2;
+			int battery_y = y0 + (bar_h - battery_rect.h) / 2;
 
 			GFX_blitBatteryAtPosition(dst, battery_x, battery_y);
 		} else {
-			ow = SCALE1(BUTTON_MARGIN);
+			ow = HW1(BUTTON_MARGIN);
 
 			if (show_rec) {
 				SDL_Rect rec_rect = asset_rects[ASSET_RECORD];
-				ow += rec_rect.w + SCALE1(BUTTON_MARGIN);
+				ow += rec_rect.w + HW1(BUTTON_MARGIN);
 			}
 
 			if (show_cap) {
 				SDL_Rect cap_rect = asset_rects[ASSET_SCREENSHOT];
-				ow += cap_rect.w + SCALE1(BUTTON_MARGIN);
+				ow += cap_rect.w + HW1(BUTTON_MARGIN);
 			}
 
 			if (show_ext_audio) {
 				SDL_Rect audio_rect = asset_rects[ASSET_AUDIO];
-				ow += audio_rect.w + SCALE1(BUTTON_MARGIN);
+				ow += audio_rect.w + HW1(BUTTON_MARGIN);
 			}
 
 			if (show_bt_controller) {
 				SDL_Rect ctrl_rect = asset_rects[ASSET_CONTROLLER];
-				ow += ctrl_rect.w + SCALE1(BUTTON_MARGIN);
+				ow += ctrl_rect.w + HW1(BUTTON_MARGIN);
 			}
 
 			if (show_wifi) {
 				SDL_Rect wifi_rect = asset_rects[ASSET_WIFI];
-				ow += wifi_rect.w + SCALE1(BUTTON_MARGIN);
+				ow += wifi_rect.w + HW1(BUTTON_MARGIN);
 			}
 
-			ow += battery_rect.w + SCALE1(BUTTON_MARGIN);
+			ow += battery_rect.w + HW1(BUTTON_MARGIN);
 
 			SDL_Surface* clock = NULL; // cache-owned — do not free
 			if (show_clock) {
@@ -2028,47 +2396,47 @@ int GFX_blitHardwareGroup(SDL_Surface* dst, IndicatorType show_setting) {
 				// Cached: redrawn every frame during list animation but the
 				// string only changes once a minute (one stale entry at most).
 				clock = GFX_getCachedText(font.small, display_name, uintToColour(THEME_COLOR6_255));
-				ow += clock_width + SCALE1(BUTTON_MARGIN);
+				ow += clock_width + HW1(BUTTON_MARGIN);
 			}
 
-			ox = dst->w - SCALE1(PADDING) - ow;
+			ox = dst->w - pad - ow;
 
-			ox += SCALE1(BUTTON_MARGIN);
+			ox += HW1(BUTTON_MARGIN);
 
 			if (show_rec) {
 				// classic "recording" red dot
 				SDL_Rect rec_rect = asset_rects[ASSET_RECORD];
-				int y = (bar_h - rec_rect.h) / 2;
+				int y = y0 + (bar_h - rec_rect.h) / 2;
 
 				GFX_blitAssetColor(ASSET_RECORD, NULL, dst, &(SDL_Rect){ox, y}, 0xFF453A);
-				ox += rec_rect.w + SCALE1(BUTTON_MARGIN);
+				ox += rec_rect.w + HW1(BUTTON_MARGIN);
 			}
 
 			if (show_cap) {
 				// camera: screenshot daemon armed (L2+R2 captures)
 				SDL_Rect cap_rect = asset_rects[ASSET_SCREENSHOT];
-				int y = (bar_h - cap_rect.h) / 2;
+				int y = y0 + (bar_h - cap_rect.h) / 2;
 
 				GFX_blitAssetColor(ASSET_SCREENSHOT, NULL, dst, &(SDL_Rect){ox, y}, THEME_COLOR6);
-				ox += cap_rect.w + SCALE1(BUTTON_MARGIN);
+				ox += cap_rect.w + HW1(BUTTON_MARGIN);
 			}
 
 			if (show_ext_audio) {
 				SDL_Rect audio_rect = asset_rects[ASSET_AUDIO];
 				int x = ox;
-				int y = (bar_h - audio_rect.h) / 2;
+				int y = y0 + (bar_h - audio_rect.h) / 2;
 
 				GFX_blitAssetColor(ASSET_AUDIO, NULL, dst, &(SDL_Rect){x, y}, THEME_COLOR6);
-				ox += audio_rect.w + SCALE1(BUTTON_MARGIN);
+				ox += audio_rect.w + HW1(BUTTON_MARGIN);
 			}
 
 			if (show_bt_controller) {
 				SDL_Rect ctrl_rect = asset_rects[ASSET_CONTROLLER];
 				int x = ox;
-				int y = (bar_h - ctrl_rect.h) / 2;
+				int y = y0 + (bar_h - ctrl_rect.h) / 2;
 
 				GFX_blitAssetColor(ASSET_CONTROLLER, NULL, dst, &(SDL_Rect){x, y}, THEME_COLOR6);
-				ox += ctrl_rect.w + SCALE1(BUTTON_MARGIN);
+				ox += ctrl_rect.w + HW1(BUTTON_MARGIN);
 			}
 
 			if (show_wifi) {
@@ -2078,21 +2446,21 @@ int GFX_blitHardwareGroup(SDL_Surface* dst, IndicatorType show_setting) {
 																									: ASSET_WIFI_OFF; // this should use ASSET_WIFI and be greyed out
 				SDL_Rect wifi_rect = asset_rects[asset];
 				int x = ox;
-				int y = (bar_h - wifi_rect.h) / 2;
+				int y = y0 + (bar_h - wifi_rect.h) / 2;
 
 				GFX_blitAssetColor(asset, NULL, dst, &(SDL_Rect){x, y}, THEME_COLOR6);
-				ox += wifi_rect.w + SCALE1(BUTTON_MARGIN);
+				ox += wifi_rect.w + HW1(BUTTON_MARGIN);
 			}
 
 			int battery_x = ox;
-			int battery_y = (bar_h - battery_rect.h) / 2;
+			int battery_y = y0 + (bar_h - battery_rect.h) / 2;
 
 			GFX_blitBatteryAtPosition(dst, battery_x, battery_y);
-			ox += battery_rect.w + SCALE1(BUTTON_MARGIN);
+			ox += battery_rect.w + HW1(BUTTON_MARGIN);
 
 			if (show_clock && clock) {
 				int x = ox;
-				int y = (bar_h - clock->h) / 2;
+				int y = y0 + (bar_h - clock->h) / 2;
 				SDL_BlitSurface(clock, NULL, dst, &(SDL_Rect){x, y});
 				// no free — surface is owned by the text cache
 			}
@@ -2101,10 +2469,67 @@ int GFX_blitHardwareGroup(SDL_Surface* dst, IndicatorType show_setting) {
 
 	return ow;
 }
+
+// The status group (indicator, or recording, capture, audio, controller, Wi-Fi, battery and clock), centred in the top
+// bar. Returns its width in px.
+int GFX_blitHardwareGroup(SDL_Surface* dst, IndicatorType show_setting) {
+	return hardwareGroupDraw(dst, show_setting, 0);
+}
+// The volume / brightness / colour-temperature indicator draws at INDICATOR_SCALE (defines.h), two thirds of the UI
+// scale, with that scale's baked asset sheet (assets@2x / @1.625x / @1.5x) swapped in for the call, so its PILL_SIZE
+// pill fits inside the top bar (BAR_HEIGHT).
+#define IND1(a) ((int)((a) * INDICATOR_SCALE + 0.5f))
+static struct {
+	bool tried;
+	SDL_Surface* assets;
+	SDL_Rect rects[ASSET_COUNT];
+} hw_ind;
+
+static void hwIndicatorFree(void) {
+	if (hw_ind.assets)
+		SDL_FreeSurface(hw_ind.assets);
+	memset(&hw_ind, 0, sizeof(hw_ind));
+}
+
+static bool hwIndicatorReady(void) {
+	if (!hw_ind.tried) {
+		hw_ind.tried = true;
+		GFX_initAssetRectsInto(hw_ind.rects, INDICATOR_SCALE);
+		hw_ind.assets = GFX_loadScaledSheet("assets", INDICATOR_SCALE);
+		if (!hw_ind.assets)
+			LOG_info("missing assets@%gx.png: the indicator falls back to the UI scale\n", INDICATOR_SCALE);
+	}
+	return hw_ind.assets != NULL;
+}
+
+void GFX_hardwareIndicatorSize(int* w, int* h) {
+	bool fixed = hwIndicatorReady();
+	*w = fixed ? IND1(HW_INDICATOR_WIDTH) : SCALE1(HW_INDICATOR_WIDTH);
+	*h = fixed ? IND1(PILL_SIZE) : SCALE1(PILL_SIZE);
+}
+
+int GFX_blitHardwareIndicatorFixed(SDL_Surface* dst, int x, int y, IndicatorType indicator_type) {
+	if (!hwIndicatorReady())
+		return GFX_blitHardwareIndicator(dst, x, y, indicator_type);
+	// swap the indicator context in (over the UI scale's)
+	SDL_Rect live[ASSET_COUNT];
+	memcpy(live, asset_rects, sizeof(live));
+	SDL_Surface* live_assets = gfx.assets;
+	float live_scale = hw_scale;
+	hw_scale = INDICATOR_SCALE;
+	memcpy(asset_rects, hw_ind.rects, sizeof(live));
+	gfx.assets = hw_ind.assets;
+	int ow = GFX_blitHardwareIndicator(dst, x, y, indicator_type);
+	// and back
+	gfx.assets = live_assets;
+	memcpy(asset_rects, live, sizeof(live));
+	hw_scale = live_scale;
+	return ow;
+}
 char** GFX_getHardwareHintPairs(IndicatorType show_setting) {
 	static char* brightness_pairs[] = {BRIGHTNESS_BUTTON_LABEL, "BRIGHTNESS", NULL};
 	static char* colortemp_pairs[] = {BRIGHTNESS_BUTTON_LABEL, "COLOR TEMP", NULL};
-	static char* default_pairs[] = {"SELECT", "BRGHTNESS", NULL};
+	static char* default_pairs[] = {"SELECT", "BRIGHTNESS", NULL};
 
 	if (show_setting == INDICATOR_BRIGHTNESS)
 		return brightness_pairs;
@@ -2218,14 +2643,14 @@ static void SND_resizeBuffer(void) { // plat_sound_resize_buffer
 #endif
 
 	int buffer_bytes = snd.frame_count * sizeof(SND_Frame);
+	pthread_mutex_lock(&audio_mutex);
 	snd.buffer = (SND_Frame*)realloc(snd.buffer, buffer_bytes);
-
-	LOG_info("Resized audio buffer to: %d bytes\n", buffer_bytes);
-
 	memset(snd.buffer, 0, buffer_bytes);
-
 	snd.frame_in = 0;
 	snd.frame_out = 0;
+	pthread_mutex_unlock(&audio_mutex);
+
+	LOG_info("Resized audio buffer to: %d bytes\n", buffer_bytes);
 
 #if defined(USE_SDL2)
 	SDL_UnlockAudioDevice(snd.device_id);
@@ -2476,7 +2901,7 @@ size_t SND_batchSamples(const SND_Frame* frames, size_t frame_count) {
 
 		int written_frames = 0;
 		pthread_mutex_lock(&audio_mutex);
-		for (int i = 0; i < resampled.frame_count; i++) {
+		for (int i = 0; snd.buffer && snd.frame_count > 0 && i < resampled.frame_count; i++) {
 			// Check if buffer full (leave one slot free)
 			if ((snd.frame_in + 1) % snd.frame_count == snd.frame_out) {
 				// Buffer full, break early
@@ -2501,6 +2926,16 @@ enum {
 	SND_FF_VERY_LATE
 };
 
+float SND_bufferOccupancy(void) {
+	if (snd.frame_count <= 0)
+		return 0.0f;
+	pthread_mutex_lock(&audio_mutex);
+	int used = snd.frame_in - snd.frame_out;
+	if (used < 0)
+		used += snd.frame_count;
+	pthread_mutex_unlock(&audio_mutex);
+	return (float)used / snd.frame_count;
+}
 size_t SND_batchSamples_fixed_rate(const SND_Frame* frames, size_t frame_count) {
 	static int current_mode = SND_FF_ON_TIME;
 	double ratio = 1.0;
@@ -2588,7 +3023,7 @@ size_t SND_batchSamples_fixed_rate(const SND_Frame* frames, size_t frame_count) 
 		int written_frames = 0;
 
 		pthread_mutex_lock(&audio_mutex);
-		for (int i = 0; i < resampled.frame_count; i++) {
+		for (int i = 0; snd.buffer && snd.frame_count > 0 && i < resampled.frame_count; i++) {
 			if ((snd.frame_in + 1) % snd.frame_count == snd.frame_out) {
 				// Buffer is full, break. This should never happen tho, but just to be safe
 				break;
@@ -2630,7 +3065,11 @@ void SND_init(double sample_rate, double frame_rate) { // plat_sound_init
 	}
 #endif
 
+	// a core may push audio from its own thread (DCX's flycast) while the
+	// main thread resets audio: swap the state under the lock it writes under
+	pthread_mutex_lock(&audio_mutex);
 	memset(&snd, 0, sizeof(struct SND_Context));
+	pthread_mutex_unlock(&audio_mutex);
 	snd.frame_rate = frame_rate;
 
 	SDL_AudioSpec spec_in;
@@ -2699,25 +3138,21 @@ void SND_quit(void) {
 	if (SDL_WasInit(SDL_INIT_AUDIO))
 		LOG_error("SND_quit: failed to quit audio!!\n");
 	LOG_debug("SND_quit: quit audio!!\n");
+	pthread_mutex_lock(&audio_mutex);
 	snd.initialized = 0;
-
 	if (snd.buffer) {
 		free(snd.buffer);
 		snd.buffer = NULL;
 	}
+	pthread_mutex_unlock(&audio_mutex);
 }
 
 // Weak reference: resolves to NULL if -lasound is not linked.
-// (No ALSA on macOS, and Mach-O rejects undefined weak refs at link time.)
-#ifndef __APPLE__
 extern int snd_config_update_free_global(void) __attribute__((weak));
-#endif
 
 void SND_flushALSAConfig(void) {
-#ifndef __APPLE__
 	if (snd_config_update_free_global)
 		snd_config_update_free_global();
-#endif
 }
 
 void SND_resetAudio(double sample_rate, double frame_rate) {
@@ -2758,22 +3193,6 @@ FALLBACK_IMPLEMENTATION int PLAT_lidChanged(int* state) {
 ///////////////////////////////
 
 PAD_Context pad;
-
-#ifdef HAS_GAMECONTROLLER
-// Desktop external-controller support. The handle is opened/closed in PAD_poll
-// on SDL_CONTROLLERDEVICEADDED/REMOVED. Triggers are analog (0..32767); treat
-// one past the half-way point as a digital L2/R2 press.
-static SDL_GameController* gamecontroller = NULL;
-#define GAMECONTROLLER_TRIGGER_THRESHOLD 16384
-// Select+Start pressed together act as MENU: modern macOS reserves the
-// Guide/Home button system-wide (opens the Games app) and offers no way to
-// remap it, so pads need a menu chord that never leaves the app. Tracks the
-// raw held state of both halves; while the chord is latched the raw
-// Select/Start events are swallowed so cores don't see them held.
-static int gc_select_down = 0;
-static int gc_start_down = 0;
-static int gc_menu_chord = 0;
-#endif
 
 #define AXIS_DEADZONE 0x4000
 void PAD_setAnalog(int neg_id, int pos_id, int value, int repeat_at) {
@@ -2833,18 +3252,18 @@ void PAD_reset(void) {
 
 FALLBACK_IMPLEMENTATION void PLAT_pokeCapture(void) {}
 FALLBACK_IMPLEMENTATION void PLAT_setBigCoreOnline(bool online) {
-	(void)online; // single cluster (tg5040, desktop): nothing to hotplug
+	(void)online; // single cluster (tg5040): nothing to hotplug
 }
 FALLBACK_IMPLEMENTATION void PLAT_setCPUSpeedRange(int min_khz, int max_khz) {
 	(void)min_khz;
-	(void)max_khz; // no cpufreq on this platform (desktop)
+	(void)max_khz; // platform has no cpufreq range control
 }
-// tg5040 and desktop: cpu0's cpufreq policy is the only one. tg5050 overrides
+// tg5040: cpu0's cpufreq policy is the only one. tg5050 overrides
 // this to also span the big cluster's policy4 when cpu4 is online.
 FALLBACK_IMPLEMENTATION bool PLAT_getCPUHwRangeKhz(int* min_khz, int* max_khz) {
 	int lo = getInt("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_min_freq");
 	int hi = getInt("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq");
-	if (lo <= 0 || hi <= 0) // no cpufreq (desktop)
+	if (lo <= 0 || hi <= 0) // no cpufreq
 		return false;
 	*min_khz = lo;
 	*max_khz = hi;
@@ -3253,167 +3672,7 @@ FALLBACK_IMPLEMENTATION void PLAT_pollInput(void) {
 				// LOG_info("cancel: %i\n", axis);
 				btn = BTN_NONE;
 			}
-		}
-#ifdef HAS_GAMECONTROLLER
-		// Desktop external controller (SDL_GameController). Face buttons map by
-		// physical position to the Nintendo/device layout: right face =
-		// A/confirm, bottom = B/back. Keyboard (CODE_*) stays live alongside.
-		else if (event.type == SDL_CONTROLLERBUTTONDOWN || event.type == SDL_CONTROLLERBUTTONUP) {
-			pressed = event.type == SDL_CONTROLLERBUTTONDOWN;
-			switch (event.cbutton.button) {
-			case SDL_CONTROLLER_BUTTON_A:
-				btn = BTN_B;
-				id = BTN_ID_B;
-				break; // bottom
-			case SDL_CONTROLLER_BUTTON_B:
-				btn = BTN_A;
-				id = BTN_ID_A;
-				break; // right (confirm)
-			case SDL_CONTROLLER_BUTTON_X:
-				btn = BTN_Y;
-				id = BTN_ID_Y;
-				break; // left
-			case SDL_CONTROLLER_BUTTON_Y:
-				btn = BTN_X;
-				id = BTN_ID_X;
-				break; // top
-			case SDL_CONTROLLER_BUTTON_DPAD_UP:
-				btn = BTN_DPAD_UP;
-				id = BTN_ID_DPAD_UP;
-				break;
-			case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
-				btn = BTN_DPAD_DOWN;
-				id = BTN_ID_DPAD_DOWN;
-				break;
-			case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
-				btn = BTN_DPAD_LEFT;
-				id = BTN_ID_DPAD_LEFT;
-				break;
-			case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
-				btn = BTN_DPAD_RIGHT;
-				id = BTN_ID_DPAD_RIGHT;
-				break;
-			case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:
-				btn = BTN_L1;
-				id = BTN_ID_L1;
-				break;
-			case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER:
-				btn = BTN_R1;
-				id = BTN_ID_R1;
-				break;
-			case SDL_CONTROLLER_BUTTON_LEFTSTICK:
-				btn = BTN_L3;
-				id = BTN_ID_L3;
-				break;
-			case SDL_CONTROLLER_BUTTON_RIGHTSTICK:
-				btn = BTN_R3;
-				id = BTN_ID_R3;
-				break;
-			case SDL_CONTROLLER_BUTTON_BACK:
-				btn = BTN_SELECT;
-				id = BTN_ID_SELECT;
-				break;
-			case SDL_CONTROLLER_BUTTON_START:
-				btn = BTN_START;
-				id = BTN_ID_START;
-				break;
-			case SDL_CONTROLLER_BUTTON_GUIDE:
-				btn = BTN_MENU;
-				id = BTN_ID_MENU;
-				break; // Home/Guide opens the menu
-			default:
-				break;
-			}
-
-			// Select+Start chord -> MENU (see gc_menu_chord above).
-			if (btn == BTN_SELECT)
-				gc_select_down = pressed;
-			else if (btn == BTN_START)
-				gc_start_down = pressed;
-			if (btn == BTN_SELECT || btn == BTN_START) {
-				if (pressed && gc_select_down && gc_start_down && !gc_menu_chord) {
-					// second half just went down: latch the chord, retract the
-					// first half from pad state (it was delivered when pressed
-					// alone), and deliver this event as a MENU press instead
-					gc_menu_chord = 1;
-					int other = (btn == BTN_SELECT) ? BTN_START : BTN_SELECT;
-					pad.is_pressed &= ~other;
-					pad.just_pressed &= ~other;
-					pad.just_repeated &= ~other;
-					btn = BTN_MENU;
-					id = BTN_ID_MENU;
-				} else if (gc_menu_chord) {
-					if (pressed) {
-						btn = BTN_NONE; // half re-pressed while latched: swallow
-					} else if (pad.is_pressed & BTN_MENU) {
-						btn = BTN_MENU; // first half released: release MENU
-						id = BTN_ID_MENU;
-					} else {
-						btn = BTN_NONE; // second half released: already done
-					}
-					if (!gc_select_down && !gc_start_down)
-						gc_menu_chord = 0;
-				}
-			}
-		} else if (event.type == SDL_CONTROLLERAXISMOTION) {
-			int val = event.caxis.value;
-			// Left stick: analog passthrough to cores (pad.laxis, read by
-			// minarch for RETRO_DEVICE_ANALOG) AND digital d-pad via
-			// PAD_setAnalog so menus and non-analog cores stay usable. Right
-			// stick: analog passthrough only. Triggers: digital past a threshold.
-			switch (event.caxis.axis) {
-			case SDL_CONTROLLER_AXIS_LEFTX:
-				pad.laxis.x = val;
-				PAD_setAnalog(BTN_ID_ANALOG_LEFT, BTN_ID_ANALOG_RIGHT, val, tick + PAD_REPEAT_DELAY);
-				break;
-			case SDL_CONTROLLER_AXIS_LEFTY:
-				pad.laxis.y = val;
-				PAD_setAnalog(BTN_ID_ANALOG_UP, BTN_ID_ANALOG_DOWN, val, tick + PAD_REPEAT_DELAY);
-				break;
-			case SDL_CONTROLLER_AXIS_RIGHTX:
-				pad.raxis.x = val;
-				break;
-			case SDL_CONTROLLER_AXIS_RIGHTY:
-				pad.raxis.y = val;
-				break;
-			case SDL_CONTROLLER_AXIS_TRIGGERLEFT:
-				btn = BTN_L2;
-				id = BTN_ID_L2;
-				pressed = val > GAMECONTROLLER_TRIGGER_THRESHOLD;
-				break;
-			case SDL_CONTROLLER_AXIS_TRIGGERRIGHT:
-				btn = BTN_R2;
-				id = BTN_ID_R2;
-				pressed = val > GAMECONTROLLER_TRIGGER_THRESHOLD;
-				break;
-			default:
-				break;
-			}
-			// same guard as the joystick axis path: a sub-threshold reading
-			// isn't a release unless the button was actually held
-			if (!pressed && btn != BTN_NONE && !(pad.is_pressed & btn))
-				btn = BTN_NONE;
-		} else if (event.type == SDL_CONTROLLERDEVICEADDED) {
-			// covers controllers present at startup and hot-plugged later
-			if (!gamecontroller && SDL_IsGameController(event.cdevice.which))
-				gamecontroller = SDL_GameControllerOpen(event.cdevice.which);
-		} else if (event.type == SDL_CONTROLLERDEVICEREMOVED) {
-			if (gamecontroller && event.cdevice.which == SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(gamecontroller))) {
-				SDL_GameControllerClose(gamecontroller);
-				gamecontroller = NULL;
-				// Release everything the now-gone controller was holding.
-				// pad.laxis/raxis are written ONLY by the controller axis path
-				// on desktop, so without this an off-center stick at unplug
-				// stays latched with no way to clear it; held buttons/dpad bits
-				// would likewise stick until a matching keyboard event.
-				pad.laxis.x = pad.laxis.y = 0;
-				pad.raxis.x = pad.raxis.y = 0;
-				gc_select_down = gc_start_down = gc_menu_chord = 0;
-				PAD_reset();
-			}
-		}
-#endif
-		else if (event.type == SDL_QUIT) {
+		} else if (event.type == SDL_QUIT) {
 			PWR_powerOff(0);
 		} else if (event.type == SDL_JOYDEVICEADDED || event.type == SDL_JOYDEVICEREMOVED) {
 			PAD_update(&event);
@@ -3422,8 +3681,8 @@ FALLBACK_IMPLEMENTATION void PLAT_pollInput(void) {
 		if (btn == BTN_NONE)
 			continue;
 
-		// One place all three translation branches (keyboard CODE_*, joystick
-		// JOY_*, desktop SDL_CONTROLLER_*) converge to apply btn/id to the pad,
+		// One place both translation branches (keyboard CODE_*, joystick
+		// JOY_*) converge to apply btn/id to the pad,
 		// so a single swap here covers them all. Placed after the BTN_NONE guard
 		// so the hat branch — which exits its loop with id == BTN_ID_A and forces
 		// btn = BTN_NONE — can't be resurrected into a phantom face press.
@@ -3904,6 +4163,14 @@ void PWR_update(bool* _dirty, IndicatorType* _show_setting, PWR_callback_t befor
 			was_charging = is_charging;
 			dirty = true;
 		}
+		// the percentage, when shown, follows the charge (it climbs while charging)
+		static int was_charge = -1;
+		int charge = SDL_AtomicGet(&pwr.charge);
+		if (was_charge != charge) {
+			if (was_charge != -1 && CFG_getShowBatteryPercent())
+				dirty = true;
+			was_charge = charge;
+		}
 		checked_charge_at = now;
 	}
 
@@ -3938,7 +4205,7 @@ void PWR_update(bool* _dirty, IndicatorType* _show_setting, PWR_callback_t befor
 		}
 	}
 
-	const int screenOffDelay = HAS_SLEEP ? CFG_getScreenTimeoutSecs() * 1000 : 0;
+	const int screenOffDelay = CFG_getScreenTimeoutSecs() * 1000;
 	if (screenOffDelay == 0 || (now - last_input_at >= screenOffDelay && PWR_preventAutosleep()))
 		last_input_at = now;
 
@@ -3946,7 +4213,7 @@ void PWR_update(bool* _dirty, IndicatorType* _show_setting, PWR_callback_t befor
 	const bool explicit_sleep = pwr.requested_sleep ||
 								(pwr.can_sleep && PAD_justReleased(BTN_SLEEP) && power_pressed_at);
 
-	if (HAS_SLEEP && (explicit_sleep || autosleep_expired)) {
+	if (explicit_sleep || autosleep_expired) {
 		pwr.requested_sleep = 0;
 		if (before_sleep)
 			before_sleep();
@@ -4201,7 +4468,7 @@ int PWR_deepSleep(void) {
 	if (exists(suspend_path)) {
 		LOG_info("suspending using platform suspend executable\n");
 
-		// BIN_PATH is a runtime value on desktop; quote it for the shell.
+		// Quote the path for the shell.
 		char suspend_q[MAX_PATH * 4];
 		strncpy(suspend_q, suspend_path, sizeof(suspend_q) - 1);
 		suspend_q[sizeof(suspend_q) - 1] = '\0';

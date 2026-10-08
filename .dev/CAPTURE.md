@@ -9,7 +9,7 @@ per-device display topology that forces this design is in
 
 | Piece | Where | Role |
 |---|---|---|
-| `screenshot.elf` | `workspace/all/screenshot` | Daemon armed by the OSD toggle; L2+R2 captures a JPEG to `/mnt/SDCARD/Images/Screenshots` |
+| `screenshot.elf` | `workspace/all/screenshot` | Daemon armed by the OSD toggle; L2+R2 captures a JPEG to `/mnt/SDCARD/Images/Screenshots`. `--capture [FILE]` = one-shot CLI capture |
 | `screenrecorder.elf` | `workspace/all/screenrecorder` | Records MP4 to `/mnt/SDCARD/Videos/Recordings` while running |
 | `common/drm_scanout.{c,h}` | shared | Standalone DRM plane readback (libc + UAPI only); compiled into both daemons |
 | `capture_check()` / mirror publisher | `common/generic_video.c` (included by both platforms' `platform.c`) | Foreground app publishes RGBA frames to a shm mirror while a capture daemon is active |
@@ -18,6 +18,23 @@ per-device display topology that forces this design is in
 Both daemons are PID-file driven: `/tmp/screenshot.pid` and
 `/tmp/screenrecorder.pid`, started/stopped by the OSD `toggle_screenshot` /
 `toggle_screenrecord` widgets (one shared `set.sh` for all devices).
+
+### One-shot CLI capture
+
+`screenshot.elf --capture [FILE]` (or `-c`) takes a single shot and exits — no
+daemon, no PID file, no L2+R2, no toast (a toast would land in the next shot).
+It prints the saved path and exits 0, or exits 1 when no source can supply
+pixels (2 on bad arguments). Default FILE is the usual timestamped JPEG in
+`/mnt/SDCARD/Images/Screenshots`; a `.bmp` FILE is lossless. `.png` is refused:
+the stock `/usr/bin/ffmpeg` on both devices has no PNG encoder (`mjpeg` and
+`bmp` only). Without the PID file no app publishes the mirror, so the shot
+comes from the DRM readback (tg5050) or the disp write-back dump (tg5040,
+~1 s) — both are the composited panel, OSD and toasts included. Temp raw
+files are per-PID, so it can run while the armed daemon is capturing.
+
+```sh
+adb shell /mnt/SDCARD/.system/bin/screenshot.elf -c /tmp/shot.bmp && adb pull /tmp/shot.bmp
+```
 
 ## Frame sources, in priority order
 

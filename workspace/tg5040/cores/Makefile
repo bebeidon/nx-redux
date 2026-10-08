@@ -14,6 +14,7 @@ CORES+= libretro-uae
 CORES+= mednafen_pce_fast
 CORES+= mednafen_supafaust
 CORES+= mednafen_vb
+CORES+= mednafen_wswan
 CORES+= mgba
 CORES+= pcsx_rearmed
 CORES+= pet
@@ -27,6 +28,9 @@ CORES+= vic
 CORES+= prboom
 CORES+= bluemsx
 CORES+= gearcoleco
+CORES+= flycast
+CORES+= flycast_legacy
+CORES+= ppsspp
 
 ###############################
 
@@ -38,10 +42,12 @@ CORES+= gearcoleco
 # *_MAKEFILE=
 # *_BUILD_PATH=
 # *_SUBMODULES=
+# *_LICENSE=
 
 a2600_REPO = https://github.com/libretro/stella2014-libretro
 a2600_CORE = stella2014_libretro.so
 a2600_HASH = 3cc89f0d316d6c924a5e3f4011d17421df58e615
+a2600_LICENSE = stella/license.txt
 
 a5200_CORE = a5200_libretro.so
 a5200_HASH = 526404072821bb2021fab16f8c5dbbca300512c8
@@ -52,18 +58,26 @@ a7800_HASH = acae250da8d98b8b9707cd499e2a0bf6d8500652
 
 handy_REPO = https://github.com/libretro/libretro-handy
 handy_HASH = fca239207e9c111da3e85d2faf0b1b9d7524e498
+handy_LICENSE = lynx/license.txt
 
 fbneo_REPO = https://github.com/libretro/FBNeo
 fbneo_CORE = fbneo_libretro.so
 fbneo_BUILD_PATH = fbneo/src/burner/libretro
 fbneo_MAKE = make
 fbneo_HASH = 6a5cc250c2db8d874a06ee86e302a2a78918b4c1
+# the root LICENSE.md only links to this
+fbneo_LICENSE = src/license.txt
 
 mednafen_pce_fast_REPO = https://github.com/libretro/beetle-pce-fast-libretro
 mednafen_pce_fast_HASH = 52675734da114a19b3705f03906b1455f3d76644
 
 mednafen_vb_REPO = https://github.com/libretro/beetle-vb-libretro
 mednafen_vb_HASH = 65debc7c4c7b85e2fd988d2be53496c2cf0b5f44
+
+# WonderSwan / WonderSwan Color (WSC.pak). RetroAchievements via the WSC/WS
+# tags (see all/minarch/ra_consoles.h).
+mednafen_wswan_REPO = https://github.com/libretro/beetle-wswan-libretro
+mednafen_wswan_HASH = 4b01295838ea89e3f1355bbe4cb5cf98aa6108cd
 
 fake-08_REPO = https://github.com/jtothebell/fake-08
 fake-08_CORE = fake08_libretro.so
@@ -120,6 +134,7 @@ race_HASH = 171950ea64c96ead503340ed60fa7ba18f56325c
 
 snes9x2005_plus_REPO = https://github.com/libretro/snes9x2005
 snes9x2005_plus_FLAGS = USE_BLARGG_APU=1
+snes9x2005_plus_LICENSE = copyright
 
 snes9x_REPO = https://github.com/libretro/snes9x
 snes9x_CORE = snes9x_libretro.so
@@ -134,6 +149,7 @@ libretro-uae_HASH = 2826e67ac623974f3b8ab15951f2f8407d81fc17
 libretro-cap32_REPO = https://github.com/libretro/libretro-cap32
 libretro-cap32_CORE = cap32_libretro.so
 libretro-cap32_HASH = 54eabbb210a6149496b1d023bebddb3f0120bc33
+libretro-cap32_LICENSE = cap32/COPYING.txt
 
 c64_REPO  = https://github.com/libretro/vice-libretro
 c64_CORE  = vice_x64_libretro.so
@@ -171,5 +187,35 @@ gearcoleco_BUILD_PATH = gearcoleco/platforms/libretro
 gearcoleco_HASH = ed5095b3ce158ff0cf82395a61c2476505634894
 
 ###############################
+
+# flycast (Dreamcast) libretro core, v2.7 (5aa091fd is the v2.7 tag). CMake, so
+# flycast_MAKE runs a build script (toolchain + flags live next to it); shared
+# patches are in all/cores/patches/flycast/. Only the submodules the libretro
+# build uses are initialised (tinygettext's own submodule is finished by the script).
+flycast_REPO = https://github.com/flyinghead/flycast
+flycast_HASH = 5aa091fde632fb332c8d8c34e280d62dc951954c
+flycast_SUBMODULES = core/deps/libchdr core/deps/tinygettext core/deps/asio
+flycast_MAKE = sh $(CURDIR)/../../all/cores/flycast/build-libretro.sh $(PLATFORM)
+flycast_DEPS = ../../all/cores/flycast/build-libretro.sh ../../all/cores/flycast/toolchain-aarch64.cmake
+
+# PPSSPP (PSP) libretro core, pinned to the build tested on Brick + Smart Pro S
+# (2026-09-30). CMake via a build script like flycast; shared patches in
+# all/cores/patches/ppsspp/. All bundled submodules (ffmpeg, glslang, ...) are
+# needed, so the template's default recursive init is used.
+ppsspp_REPO = https://github.com/hrydgard/ppsspp
+ppsspp_HASH = 2a1700a7ee495310c52c85f9436652cc8f26e45e
+ppsspp_MAKE = NX_CORES_OUTPUT=$(CURDIR)/$(OUTPUT_ROOT) sh $(CURDIR)/../../all/cores/ppsspp/build-libretro.sh $(PLATFORM)
+ppsspp_DEPS = ../../all/cores/ppsspp/build-libretro.sh ../../all/cores/ppsspp/outline_atomics.c ../../all/cores/flycast/toolchain-aarch64.cmake
+
+# flycast_legacy (DCX, "Dreamcast Lite"): libretro's own fork of flycast as of
+# 2022-04-06 (4c293f30; diverged from upstream in 2015), the build CrossMix-OS
+# ships. On the Brick it runs heavy games at full speed where upstream 2.7 does
+# ~80 %. Built with the fork's libretro Makefile (platform=arm64: GLES, arm64
+# dynarec); TARGET_NAME keeps it from colliding with DC's flycast_libretro.so.
+# No OpenMP (only texture upscaling uses it, which DCX leaves off). CC_AS: the
+# arm64 dynarec stub (ngen_arm64.S) needs the C preprocessor, so gcc assembles it.
+flycast_legacy_REPO = https://github.com/libretro/flycast
+flycast_legacy_HASH = 4c293f306bc16a265c2d768af5d0cea138426054
+flycast_legacy_MAKE = make platform=arm64 ARCH=aarch64 TARGET_NAME=flycast_legacy HAVE_OPENMP=0 CC_AS="$(CC)"
 
 include ../../all/cores/Makefile

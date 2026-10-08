@@ -17,6 +17,8 @@
 #define WIZ_RSYNC_LOG "/tmp/netplay_rsyncd.log"
 #define WIZ_MAX_PATTERNS 8
 
+#include "wiz_caps.h"
+
 typedef struct {
 	const char* game;					 // --game (required in wizard mode)
 	const char* serve_dir;				 // --serve-dir (optional; host offers sync)
@@ -26,15 +28,17 @@ typedef struct {
 	const char* session_path; // --session-file (default WIZ_SESSION_PATH_DEFAULT)
 	bool cleanup;			  // --cleanup
 	int max_players;		  // --max-players (2..4, default 2). >2 enables multi-join.
+	const char* caps;		  // --caps (optional; traded with the peer, see wiz_caps.h)
 } WizArgs;
 
 typedef struct {
 	char role[8]; // "host" | "client"
 	char peer_ip[16];
-	char mode[8];		// "hotspot" | "wifi"
-	char prev_ssid[33]; // SSID to restore on cleanup ("" = none)
-	int player_num;		// this device's player number (1..4); host = 1
-	int num_players;	// total players in the session (2..4)
+	char mode[8];				  // "hotspot" | "wifi"
+	char prev_ssid[33];			  // SSID to restore on cleanup ("" = none)
+	int player_num;				  // this device's player number (1..4); host = 1
+	int num_players;			  // total players in the session (2..4)
+	char peer_caps[WIZ_CAPS_MAX]; // the peer's --caps token ("" = none), see wiz_caps.h
 } WizSession;
 
 // All int returns below: 0 = ok, -1 = error (message already drawn by the
@@ -52,13 +56,9 @@ int wizard_read_session(const char* path, WizSession* s);
 // and rendered on the host's waiting screen. Empty until then.
 extern char wiz_hotspot_code[8];
 
-int wiz_wifi_ensure_connected(WizSession* s); // WiFi mode, both roles; on
-											  // desktop the only mode (a bare
-											  // "is there a LAN address" gate)
-#if defined(HAS_WIFIMG)
+int wiz_wifi_ensure_connected(WizSession* s);			// WiFi mode, both roles
 int wiz_hotspot_start(WizSession* s, const char* game); // hotspot host
 int wiz_hotspot_join(WizSession* s);					// hotspot client
-#endif
 // wizard_net.c (Task 4)
 int wiz_host_rendezvous(const WizArgs* a, WizSession* s); // wait+handshake(+sync serve)
 int wiz_client_rendezvous(const WizArgs* a, WizSession* s);

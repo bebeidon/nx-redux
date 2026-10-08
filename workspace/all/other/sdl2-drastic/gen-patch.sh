@@ -71,6 +71,10 @@ sed -i '' "s|$TMPDIR/|a/|g" "$OUTPUT"
 sed -i '' "s|$SDL_DIR/|b/|g" "$OUTPUT"
 
 echo "Paths fixed."
+
+# Keep the license header every third-party patch opens with
+{ echo "# license: modifies SDL_drastic (SDL2) (https://github.com/trngaje/SDL_drastic), zlib (LICENSE.txt); this patch is distributed under the same license."; cat "$OUTPUT"; } > "$OUTPUT.tmp"
+mv "$OUTPUT.tmp" "$OUTPUT"
 wc -l "$OUTPUT"
 
 # Clean up worktree

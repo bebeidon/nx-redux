@@ -18,10 +18,9 @@ ifeq (,$(PLATFORMS))
 PLATFORMS = tg5040 tg5050
 endif
 
-# Device variants: device=platform,overlay_res,bg_res,osd_res
-# Each device produces a separate release zip. osd_res is spelled out rather
-# than derived from bg_res so the OSD layer a device gets is readable here.
-DEVICES = brick=tg5040,768p,1024,1024x768 brickpro=tg5040,768p,1024,1024x768 smartpro=tg5040,720p,1280,1280x720 smartpros=tg5050,720p,1280,1280x720
+# Device variants: device=platform,overlay_res,osd_res
+# Each device produces a separate release zip.
+DEVICES = brick=tg5040,768p,1024x768 brickpro=tg5040,768p,1024x768 smartpro=tg5040,720p,1280x720 smartpros=tg5050,720p,1280x720
 
 # Pinned upstream commits — update these when upgrading to a new version
 DRASTIC_REPO=https://github.com/trngaje/advanced_drastic
@@ -41,11 +40,7 @@ ifeq ($(BUILD_BRANCH),main)
 else
   RELEASE_BETA := -$(BUILD_BRANCH)
 endif
-ifeq ($(PLATFORM), desktop)
-	TOOLCHAIN_FILE := Makefile.native
-else
-	TOOLCHAIN_FILE := Makefile.toolchain
-endif
+TOOLCHAIN_FILE := Makefile.toolchain
 RELEASE_NAME ?= NXRedux-$(RELEASE_TIME)$(RELEASE_BETA)
 
 # Extra paks to ship
@@ -96,41 +91,10 @@ name:
 
 build:
 	# ----------------------------------------------------
+	# ScreenScraper dev credentials from .env / environment (skipped if unset)
+	sh ./scripts/gen-ss-credentials.sh --optional
 	make build -f $(TOOLCHAIN_FILE) PLATFORM=$(PLATFORM) COMPILE_CORES=$(COMPILE_CORES)
 	# ----------------------------------------------------
-
-# Per-OS desktop build subdir (see workspace/all/*/Makefile BUILD_SUBDIR):
-# macOS host builds land in build/desktop-macos-<arch>; the Linux docker flow
-# sets its own (desktop-linux-<arch>) in package-appimage.sh, so the two
-# flows never touch each other's app-binary artifacts and can run
-# concurrently. Only meaningful on macOS (package-macos is mac-only).
-DESKTOP_BUILD_SUBDIR := desktop-macos-$(shell uname -m)
-
-package-macos: # macOS desktop bundle (arm64, unsigned); needs brew deps + gmake
-	./scripts/desktop/setup-macos-toolchain.sh
-	cd workspace/desktop/libmsettings && $(MAKE) build CROSS_COMPILE=/var/tmp/nxredux/bin/ PREFIX=/opt/homebrew PREFIX_LOCAL=/var/tmp/nxredux BUILD_SUBDIR=$(DESKTOP_BUILD_SUBDIR)
-	cd workspace/all/nextui && $(MAKE) PLATFORM=desktop CROSS_COMPILE=/var/tmp/nxredux/bin/ PREFIX=/opt/homebrew PREFIX_LOCAL=/var/tmp/nxredux UNAME_S=Darwin BUILD_TAG=$(BUILD_TAG) BUILD_SUBDIR=$(DESKTOP_BUILD_SUBDIR)
-	cd workspace/all/minarch && $(MAKE) PLATFORM=desktop CROSS_COMPILE=/var/tmp/nxredux/bin/ PREFIX=/opt/homebrew PREFIX_LOCAL=/var/tmp/nxredux UNAME_S=Darwin BUILD_SUBDIR=$(DESKTOP_BUILD_SUBDIR)
-	cd workspace/all/libgametimedb && $(MAKE) build PLATFORM=desktop CROSS_COMPILE=/var/tmp/nxredux/bin/ PREFIX=/opt/homebrew PREFIX_LOCAL=/var/tmp/nxredux UNAME_S=Darwin BUILD_SUBDIR=$(DESKTOP_BUILD_SUBDIR)
-	# The 7 Tools paks' binaries (+ gametimectl's daemon copy) and the netplay
-	# pre-launch wizard (netplay.elf, run bare off PATH by the Emus paks'
-	# launch.sh). Same recipe as nextui/minarch above; gametime/gametimectl's
-	# libgametimedb.h dep is already satisfied by the explicit rebuild just
-	# above (their Makefiles no-op it).
-	for t in settings emu-options ratools scraper sync extras gametime gametimectl netplay-wizard; do \
-		(cd workspace/all/$$t && $(MAKE) PLATFORM=desktop CROSS_COMPILE=/var/tmp/nxredux/bin/ PREFIX=/opt/homebrew PREFIX_LOCAL=/var/tmp/nxredux UNAME_S=Darwin BUILD_SUBDIR=$(DESKTOP_BUILD_SUBDIR)) || exit 1; \
-	done
-	# Build every core in the desktop cores Makefile's CORES list. Incremental:
-	# make skips a core whose output .so is already up to date, so repeat
-	# packages are fast. macOS and Linux (docker) builds are fully separated
-	# per host triple (src/macos-arm64 + output/macos-arm64 here vs
-	# linux-x86_64 in the container), so interleaving `make package-linux`
-	# can't poison this step.
-	cd workspace/desktop/cores && gmake cores PLATFORM=desktop
-	TAG=$(BUILD_TAG) ./scripts/desktop/package-macos.sh
-
-package-linux: # Linux AppImage (x86_64) via in-repo docker compose env
-	docker compose run --rm -e TAG=$(BUILD_TAG) -e HASH=$(BUILD_HASH) appimage
 
 build-cores:
 	make build-cores -f $(TOOLCHAIN_FILE) PLATFORM=$(PLATFORM) COMPILE_CORES=true
@@ -149,11 +113,10 @@ system:
 	make -f ./workspace/$(PLATFORM)/platform/Makefile.copy PLATFORM=$(PLATFORM)
 	
 	# populate system
-ifneq ($(PLATFORM), desktop)
 	cp ./workspace/$(PLATFORM)/keymon/keymon.elf ./build/SYSTEM/$(PLATFORM)/bin/
 	cp ./workspace/$(PLATFORM)/sleepmon/sleepmon.elf ./build/SYSTEM/$(PLATFORM)/bin/
 	cp ./workspace/all/syncsettings/build/$(PLATFORM)/syncsettings.elf ./build/SYSTEM/$(PLATFORM)/bin/
-	# taskset: used for CPU-affinity pinning by N64.pak, DC.pak, and (tg5050)
+	# taskset: used for CPU-affinity pinning by N64.pak and (tg5050)
 	# PS.pak launch.sh. Built from source here so a full `make deploy` stays
 	# reproducible; see workspace/all/taskset/Makefile for why it must be
 	# dynamically linked (NOT -static) on this toolchain/kernel combination.
@@ -167,7 +130,6 @@ ifneq ($(PLATFORM), desktop)
 	cp ./workspace/all/libgametimedb/build/$(PLATFORM)/libgametimedb.so ./build/SYSTEM/$(PLATFORM)/lib
 	cp ./workspace/all/gametimectl/build/$(PLATFORM)/gametimectl.elf ./build/SYSTEM/$(PLATFORM)/bin/
 	cp ./workspace/all/gametime/build/$(PLATFORM)/gametime.elf ./build/SYSTEM/$(PLATFORM)/paks/Tools/Game\ Tracker.pak/
-endif
 	cp ./workspace/$(PLATFORM)/libmsettings/libmsettings.so ./build/SYSTEM/$(PLATFORM)/lib
 	cp ./workspace/all/nextui/build/$(PLATFORM)/nextui.elf ./build/SYSTEM/$(PLATFORM)/bin/
 	cp ./workspace/all/minarch/build/$(PLATFORM)/minarch.elf ./build/SYSTEM/$(PLATFORM)/bin/
@@ -198,6 +160,20 @@ ifneq (,$(filter $(PLATFORM),tg5040 tg5050))
 	# libchdr for RetroAchievements CHD hashing
 	cp ./workspace/all/minarch/build/$(PLATFORM)/libchdr.so.* ./build/SYSTEM/$(PLATFORM)/lib/
 
+	# licenses: ours, the prebuilts' (committed in licenses/), plus the
+	# libraries cloned at build time and shipped
+	mkdir -p ./build/SYSTEM/$(PLATFORM)/licenses
+	cp ./LICENSE ./build/SYSTEM/$(PLATFORM)/licenses/NX-Redux.txt
+	cp ./licenses/*.txt ./build/SYSTEM/$(PLATFORM)/licenses/
+	# standalone emulators keep theirs beside them, like the cores
+	cp ./licenses/mupen64plus.txt ./build/SYSTEM/$(PLATFORM)/paks/Emus/N64.pak/LICENSE-mupen64plus.txt
+	cp ./licenses/gliden64.txt ./build/SYSTEM/$(PLATFORM)/paks/Emus/N64.pak/LICENSE-gliden64.txt
+	cp ./licenses/drastic.txt ./build/SYSTEM/$(PLATFORM)/paks/Emus/NDS.pak/LICENSE-drastic.txt
+	cp ./licenses/sdl2-drastic.txt ./build/SYSTEM/$(PLATFORM)/paks/Emus/NDS.pak/LICENSE-sdl2-drastic.txt
+	cp ./workspace/all/minarch/libchdr/LICENSE.txt ./build/SYSTEM/$(PLATFORM)/licenses/libchdr.txt
+	cp ./workspace/all/minarch/rcheevos/src/LICENSE ./build/SYSTEM/$(PLATFORM)/licenses/rcheevos.txt
+	cp ./workspace/$(PLATFORM)/other/unzip60/LICENSE ./build/SYSTEM/$(PLATFORM)/licenses/unzip60.txt
+
 	# RetroAchievements tools pak
 	cp ./workspace/all/ratools/build/$(PLATFORM)/ratools.elf ./build/SYSTEM/$(PLATFORM)/paks/Tools/RetroAchievements.pak/
 
@@ -209,6 +185,8 @@ ifneq (,$(filter $(PLATFORM),tg5040 tg5050))
 	# gated here, not with the other SYSTEM bin copies, because it is only built
 	# for tg5040/tg5050 (see workspace/Makefile).
 	cp ./workspace/all/netplay-wizard/build/$(PLATFORM)/netplay.elf ./build/SYSTEM/$(PLATFORM)/bin/
+	# N64 netplay relay server (N64.pak)
+	cp ./workspace/all/n64-netplay-server/build/$(PLATFORM)/m64p-server.elf ./build/SYSTEM/$(PLATFORM)/paks/Emus/N64.pak/
 
 	# Pre-launch emulator options editor (run bare off PATH by options.sh and
 	# the Emulator Settings tool)
@@ -230,51 +208,121 @@ ifeq ($(PLATFORM), tg5040)
 endif
 endif
 
-ifeq ($(PLATFORM), desktop)
-cores:
-	# stock cores
-	#cp ./workspace/$(PLATFORM)/cores/output/gambatte_libretro.so ./build/SYSTEM/$(PLATFORM)/cores
-	#cp ./workspace/$(PLATFORM)/cores/output/gpsp_libretro.so ./build/SYSTEM/$(PLATFORM)/cores
-	#cp ./workspace/$(PLATFORM)/cores/output/mgba_libretro.so ./build/SYSTEM/$(PLATFORM)/paks/Emus/MGBA.pak
-else
 cores: # TODO: can't assume every platform will have the same stock cores (platform should be responsible for copy too)
 	# stock cores
 	cp ./workspace/$(PLATFORM)/cores/output/fceumm_libretro.so ./build/SYSTEM/$(PLATFORM)/cores
+	cp ./workspace/$(PLATFORM)/cores/output/licenses/fceumm.txt ./build/SYSTEM/$(PLATFORM)/cores/LICENSE-fceumm.txt
 	cp ./workspace/$(PLATFORM)/cores/output/gambatte_libretro.so ./build/SYSTEM/$(PLATFORM)/cores
+	cp ./workspace/$(PLATFORM)/cores/output/licenses/gambatte.txt ./build/SYSTEM/$(PLATFORM)/cores/LICENSE-gambatte.txt
 	cp ./workspace/$(PLATFORM)/cores/output/gpsp_libretro.so ./build/SYSTEM/$(PLATFORM)/cores
+	cp ./workspace/$(PLATFORM)/cores/output/licenses/gpsp.txt ./build/SYSTEM/$(PLATFORM)/cores/LICENSE-gpsp.txt
 	cp ./workspace/$(PLATFORM)/cores/output/picodrive_libretro.so ./build/SYSTEM/$(PLATFORM)/cores
+	cp ./workspace/$(PLATFORM)/cores/output/licenses/picodrive.txt ./build/SYSTEM/$(PLATFORM)/cores/LICENSE-picodrive.txt
 	cp ./workspace/$(PLATFORM)/cores/output/snes9x_libretro.so ./build/SYSTEM/$(PLATFORM)/cores
+	cp ./workspace/$(PLATFORM)/cores/output/licenses/snes9x.txt ./build/SYSTEM/$(PLATFORM)/cores/LICENSE-snes9x.txt
 	cp ./workspace/$(PLATFORM)/cores/output/pcsx_rearmed_libretro.so ./build/SYSTEM/$(PLATFORM)/cores
+	cp ./workspace/$(PLATFORM)/cores/output/licenses/pcsx_rearmed.txt ./build/SYSTEM/$(PLATFORM)/cores/LICENSE-pcsx_rearmed.txt
 	
 	# extras
 	cp ./workspace/$(PLATFORM)/cores/output/a5200_libretro.so ./build/SYSTEM/$(PLATFORM)/paks/Emus/A5200.pak
+	cp ./workspace/$(PLATFORM)/cores/output/licenses/a5200.txt ./build/SYSTEM/$(PLATFORM)/paks/Emus/A5200.pak/LICENSE-a5200.txt
 	cp ./workspace/$(PLATFORM)/cores/output/prosystem_libretro.so ./build/SYSTEM/$(PLATFORM)/paks/Emus/A7800.pak
+	cp ./workspace/$(PLATFORM)/cores/output/licenses/a7800.txt ./build/SYSTEM/$(PLATFORM)/paks/Emus/A7800.pak/LICENSE-a7800.txt
 	cp ./workspace/$(PLATFORM)/cores/output/stella2014_libretro.so ./build/SYSTEM/$(PLATFORM)/paks/Emus/A2600.pak
+	cp ./workspace/$(PLATFORM)/cores/output/licenses/a2600.txt ./build/SYSTEM/$(PLATFORM)/paks/Emus/A2600.pak/LICENSE-a2600.txt
 	cp ./workspace/$(PLATFORM)/cores/output/handy_libretro.so ./build/SYSTEM/$(PLATFORM)/paks/Emus/LYNX.pak
+	cp ./workspace/$(PLATFORM)/cores/output/licenses/handy.txt ./build/SYSTEM/$(PLATFORM)/paks/Emus/LYNX.pak/LICENSE-handy.txt
 	cp ./workspace/$(PLATFORM)/cores/output/fake08_libretro.so ./build/SYSTEM/$(PLATFORM)/paks/Emus/P8.pak
+	cp ./workspace/$(PLATFORM)/cores/output/licenses/fake-08.txt ./build/SYSTEM/$(PLATFORM)/paks/Emus/P8.pak/LICENSE-fake-08.txt
 	cp ./workspace/$(PLATFORM)/cores/output/mgba_libretro.so ./build/SYSTEM/$(PLATFORM)/paks/Emus/MGBA.pak
+	cp ./workspace/$(PLATFORM)/cores/output/licenses/mgba.txt ./build/SYSTEM/$(PLATFORM)/paks/Emus/MGBA.pak/LICENSE-mgba.txt
 	cp ./workspace/$(PLATFORM)/cores/output/mgba_libretro.so ./build/SYSTEM/$(PLATFORM)/paks/Emus/SGB.pak
+	cp ./workspace/$(PLATFORM)/cores/output/licenses/mgba.txt ./build/SYSTEM/$(PLATFORM)/paks/Emus/SGB.pak/LICENSE-mgba.txt
 	cp ./workspace/$(PLATFORM)/cores/output/genesis_plus_gx_libretro.so ./build/SYSTEM/$(PLATFORM)/paks/Emus/GPGX.pak
+	cp ./workspace/$(PLATFORM)/cores/output/licenses/genesis_plus_gx.txt ./build/SYSTEM/$(PLATFORM)/paks/Emus/GPGX.pak/LICENSE-genesis_plus_gx.txt
+	cp ./workspace/$(PLATFORM)/cores/output/flycast_libretro.so ./build/SYSTEM/$(PLATFORM)/paks/Emus/DC.pak
+	cp ./workspace/$(PLATFORM)/cores/output/licenses/flycast.txt ./build/SYSTEM/$(PLATFORM)/paks/Emus/DC.pak/LICENSE-flycast.txt
+	# Dreamcast Lite (DCX): libretro's 2022 flycast fork, lighter than DC's 2.7
+	cp ./workspace/$(PLATFORM)/cores/output/flycast_legacy_libretro.so ./build/SYSTEM/$(PLATFORM)/paks/Emus/DCX.pak
+	cp ./workspace/$(PLATFORM)/cores/output/licenses/flycast_legacy.txt ./build/SYSTEM/$(PLATFORM)/paks/Emus/DCX.pak/LICENSE-flycast_legacy.txt
+	cp ./workspace/$(PLATFORM)/cores/output/ppsspp_libretro.so ./build/SYSTEM/$(PLATFORM)/paks/Emus/PSP.pak
+	cp ./workspace/$(PLATFORM)/cores/output/licenses/ppsspp.txt ./build/SYSTEM/$(PLATFORM)/paks/Emus/PSP.pak/LICENSE-ppsspp.txt
+	# PPSSPP runtime assets (staged next to the core by all/cores/ppsspp/build-libretro.sh), read via NX_PPSSPP_ASSETS
+	rm -rf ./build/SYSTEM/$(PLATFORM)/paks/Emus/PSP.pak/PPSSPP
+	cp -R ./workspace/$(PLATFORM)/cores/output/ppsspp-assets/PPSSPP ./build/SYSTEM/$(PLATFORM)/paks/Emus/PSP.pak/PPSSPP
 	cp ./workspace/$(PLATFORM)/cores/output/mednafen_pce_fast_libretro.so ./build/SYSTEM/$(PLATFORM)/paks/Emus/PCE.pak
+	cp ./workspace/$(PLATFORM)/cores/output/licenses/mednafen_pce_fast.txt ./build/SYSTEM/$(PLATFORM)/paks/Emus/PCE.pak/LICENSE-mednafen_pce_fast.txt
 	cp ./workspace/$(PLATFORM)/cores/output/pokemini_libretro.so ./build/SYSTEM/$(PLATFORM)/paks/Emus/PKM.pak
+	cp ./workspace/$(PLATFORM)/cores/output/licenses/pokemini.txt ./build/SYSTEM/$(PLATFORM)/paks/Emus/PKM.pak/LICENSE-pokemini.txt
 	cp ./workspace/$(PLATFORM)/cores/output/race_libretro.so ./build/SYSTEM/$(PLATFORM)/paks/Emus/NGP.pak
+	cp ./workspace/$(PLATFORM)/cores/output/licenses/race.txt ./build/SYSTEM/$(PLATFORM)/paks/Emus/NGP.pak/LICENSE-race.txt
 	cp ./workspace/$(PLATFORM)/cores/output/race_libretro.so ./build/SYSTEM/$(PLATFORM)/paks/Emus/NGPC.pak
+	cp ./workspace/$(PLATFORM)/cores/output/licenses/race.txt ./build/SYSTEM/$(PLATFORM)/paks/Emus/NGPC.pak/LICENSE-race.txt
 	cp ./workspace/$(PLATFORM)/cores/output/fbneo_libretro.so ./build/SYSTEM/$(PLATFORM)/paks/Emus/FBN.pak
+	cp ./workspace/$(PLATFORM)/cores/output/licenses/fbneo.txt ./build/SYSTEM/$(PLATFORM)/paks/Emus/FBN.pak/LICENSE-fbneo.txt
 	cp ./workspace/$(PLATFORM)/cores/output/mednafen_supafaust_libretro.so ./build/SYSTEM/$(PLATFORM)/paks/Emus/SUPA.pak
+	cp ./workspace/$(PLATFORM)/cores/output/licenses/mednafen_supafaust.txt ./build/SYSTEM/$(PLATFORM)/paks/Emus/SUPA.pak/LICENSE-mednafen_supafaust.txt
 	cp ./workspace/$(PLATFORM)/cores/output/mednafen_vb_libretro.so ./build/SYSTEM/$(PLATFORM)/paks/Emus/VB.pak
+	cp ./workspace/$(PLATFORM)/cores/output/licenses/mednafen_vb.txt ./build/SYSTEM/$(PLATFORM)/paks/Emus/VB.pak/LICENSE-mednafen_vb.txt
+	cp ./workspace/$(PLATFORM)/cores/output/mednafen_wswan_libretro.so ./build/SYSTEM/$(PLATFORM)/paks/Emus/WSC.pak
+	cp ./workspace/$(PLATFORM)/cores/output/licenses/mednafen_wswan.txt ./build/SYSTEM/$(PLATFORM)/paks/Emus/WSC.pak/LICENSE-mednafen_wswan.txt
 	cp ./workspace/$(PLATFORM)/cores/output/cap32_libretro.so ./build/SYSTEM/$(PLATFORM)/paks/Emus/CPC.pak
+	cp ./workspace/$(PLATFORM)/cores/output/licenses/libretro-cap32.txt ./build/SYSTEM/$(PLATFORM)/paks/Emus/CPC.pak/LICENSE-libretro-cap32.txt
 	cp ./workspace/$(PLATFORM)/cores/output/puae2021_libretro.so ./build/SYSTEM/$(PLATFORM)/paks/Emus/PUAE.pak
+	cp ./workspace/$(PLATFORM)/cores/output/licenses/libretro-uae.txt ./build/SYSTEM/$(PLATFORM)/paks/Emus/PUAE.pak/LICENSE-libretro-uae.txt
 	cp ./workspace/$(PLATFORM)/cores/output/prboom_libretro.so ./build/SYSTEM/$(PLATFORM)/paks/Emus/PRBOOM.pak
+	cp ./workspace/$(PLATFORM)/cores/output/licenses/prboom.txt ./build/SYSTEM/$(PLATFORM)/paks/Emus/PRBOOM.pak/LICENSE-prboom.txt
 	cp ./workspace/$(PLATFORM)/cores/output/vice_x64_libretro.so ./build/SYSTEM/$(PLATFORM)/paks/Emus/C64.pak
+	cp ./workspace/$(PLATFORM)/cores/output/licenses/c64.txt ./build/SYSTEM/$(PLATFORM)/paks/Emus/C64.pak/LICENSE-c64.txt
 	cp ./workspace/$(PLATFORM)/cores/output/vice_x128_libretro.so ./build/SYSTEM/$(PLATFORM)/paks/Emus/C128.pak
+	cp ./workspace/$(PLATFORM)/cores/output/licenses/c128.txt ./build/SYSTEM/$(PLATFORM)/paks/Emus/C128.pak/LICENSE-c128.txt
 	cp ./workspace/$(PLATFORM)/cores/output/vice_xplus4_libretro.so ./build/SYSTEM/$(PLATFORM)/paks/Emus/PLUS4.pak
+	cp ./workspace/$(PLATFORM)/cores/output/licenses/plus4.txt ./build/SYSTEM/$(PLATFORM)/paks/Emus/PLUS4.pak/LICENSE-plus4.txt
 	cp ./workspace/$(PLATFORM)/cores/output/vice_xpet_libretro.so ./build/SYSTEM/$(PLATFORM)/paks/Emus/PET.pak
+	cp ./workspace/$(PLATFORM)/cores/output/licenses/pet.txt ./build/SYSTEM/$(PLATFORM)/paks/Emus/PET.pak/LICENSE-pet.txt
 	cp ./workspace/$(PLATFORM)/cores/output/vice_xvic_libretro.so ./build/SYSTEM/$(PLATFORM)/paks/Emus/VIC.pak
+	cp ./workspace/$(PLATFORM)/cores/output/licenses/vic.txt ./build/SYSTEM/$(PLATFORM)/paks/Emus/VIC.pak/LICENSE-vic.txt
 	cp ./workspace/$(PLATFORM)/cores/output/bluemsx_libretro.so ./build/SYSTEM/$(PLATFORM)/paks/Emus/MSX.pak
+	cp ./workspace/$(PLATFORM)/cores/output/licenses/bluemsx.txt ./build/SYSTEM/$(PLATFORM)/paks/Emus/MSX.pak/LICENSE-bluemsx.txt
 	cp ./workspace/$(PLATFORM)/cores/output/gearcoleco_libretro.so ./build/SYSTEM/$(PLATFORM)/paks/Emus/COLECO.pak
-endif
+	cp ./workspace/$(PLATFORM)/cores/output/licenses/gearcoleco.txt ./build/SYSTEM/$(PLATFORM)/paks/Emus/COLECO.pak/LICENSE-gearcoleco.txt
 
-common: build system cores
+common: build system cores prebuilts
+
+# Third-party binaries built from pinned source by workspace/all/prebuilts/<name>.sh
+# inside the toolchain image (shared ones with tg5040's). CI builds each in its
+# own cached job and drops the results in workspace/all/prebuilts/output/; locally,
+# `make build-prebuilts PLATFORM=...` builds what that platform needs.
+PREBUILTS_tg5040 = ffplay rsync gliden64 mupen64plus sdl2-drastic
+PREBUILTS_tg5050 = mupen64plus sdl2-drastic
+
+build-prebuilts:
+	@for p in $(PREBUILTS_$(PLATFORM)); do \
+		make build-prebuilt PLATFORM=$(PLATFORM) PREBUILT=$$p || exit 1; \
+	done
+
+build-prebuilt:
+ifndef PREBUILT
+	$(error PREBUILT is not set)
+endif
+	docker run --rm -v $(CURDIR)/workspace:/root/workspace ghcr.io/loveretro/$(PLATFORM)-toolchain:latest \
+		/bin/bash -c '. ~/.bashrc && cd /root/workspace && PLATFORM=$(PLATFORM) bash all/prebuilts/$(PREBUILT).sh'
+
+N64_PREBUILT_FILES = libmupen64plus.so.2 mupen64plus mupen64plus-audio-sdl.so \
+	mupen64plus-input-sdl.so mupen64plus-rsp-hle.so mupen64plus-video-rice.so
+PREBUILT_FILES_tg5040 = SYSTEM/shared/bin/ffplay SYSTEM/shared/bin/rsync \
+	BASE/Emus/shared/mupen64plus/mupen64plus-video-GLideN64.so \
+	BASE/Emus/shared/mupen64plus/libpng16.so.16
+PREBUILT_FILES = $(PREBUILT_FILES_$(PLATFORM)) \
+	$(addprefix SYSTEM/$(PLATFORM)/paks/Emus/N64.pak/,$(N64_PREBUILT_FILES)) \
+	SYSTEM/$(PLATFORM)/paks/Emus/NDS.pak/libs/libSDL2-2.0.so.0
+
+prebuilts:
+	# third-party prebuilts (see build-prebuilts); a missing one fails the build
+	@for f in $(PREBUILT_FILES); do \
+		test -f ./workspace/all/prebuilts/output/$(PLATFORM)/$$f || { echo "missing prebuilt $$f: run make build-prebuilts PLATFORM=$(PLATFORM)" >&2; exit 1; }; \
+	done
+	cp -R ./workspace/all/prebuilts/output/$(PLATFORM)/. ./build/
 	
 format:
 	git ls-files '*.c' '*.h' | xargs clang-format -i
@@ -335,10 +383,10 @@ compile-commands:
 				;; \
 		esac; \
 		if [ "$$first" = "1" ]; then first=0; else echo ',' >> compile_commands.json; fi; \
-		printf '  {"directory": "%s", "file": "%s/%s", "arguments": ["clang", "-std=gnu99", "-DUSE_SDL2", "-DUSE_GLES", "-DGL_GLEXT_PROTOTYPES", "-DPLATFORM=\\"tg5040\\"", "-DHAS_CHEEVOS", "-DRC_CLIENT_SUPPORTS_HASH", "-DRC_DISABLE_LUA", "-DBUILD_DATE=\\"dev\\"", "-DBUILD_HASH=\\"dev\\"", %s"-I%s/workspace/all/common", "-I%s/workspace/all/common/ui", "-I%s/workspace/all/nextui", "-I%s/workspace/all/minarch", "-I%s/workspace/all/minarch/libretro-common/include", "-I%s/workspace/all/netplay", "-I%s/workspace/all/settings", "-I%s/workspace/all/libgametimedb", "-I%s/.clangd-shim", "-I%s/scripts/clangd/include", "-I%s/workspace/tg5040/platform", "-I%s/workspace/tg5050/platform", "-I%s/workspace/desktop/platform", "-I%s/workspace/tg5040/libmsettings", "-I%s/workspace/tg5050/libmsettings", "-I%s/workspace/desktop/libmsettings", "-I/opt/homebrew/include", "-c", "%s/%s"]}' \
+		printf '  {"directory": "%s", "file": "%s/%s", "arguments": ["clang", "-std=gnu99", "-DUSE_SDL2", "-DUSE_GLES", "-DGL_GLEXT_PROTOTYPES", "-DPLATFORM=\\"tg5040\\"", "-DHAS_CHEEVOS", "-DRC_CLIENT_SUPPORTS_HASH", "-DRC_DISABLE_LUA", "-DBUILD_DATE=\\"dev\\"", "-DBUILD_HASH=\\"dev\\"", %s"-I%s/workspace/all/common", "-I%s/workspace/all/common/ui", "-I%s/workspace/all/nextui", "-I%s/workspace/all/minarch", "-I%s/workspace/all/minarch/libretro-common/include", "-I%s/workspace/all/netplay", "-I%s/workspace/all/settings", "-I%s/workspace/all/libgametimedb", "-I%s/.clangd-shim", "-I%s/scripts/clangd/include", "-I%s/workspace/tg5040/platform", "-I%s/workspace/tg5050/platform", "-I%s/workspace/tg5040/libmsettings", "-I%s/workspace/tg5050/libmsettings", "-I/opt/homebrew/include", "-c", "%s/%s"]}' \
 			"$(CURDIR)" "$(CURDIR)" "$$file" \
 			"$$extra_flags" \
-			"$(CURDIR)" "$(CURDIR)" "$(CURDIR)" "$(CURDIR)" "$(CURDIR)" "$(CURDIR)" "$(CURDIR)" "$(CURDIR)" "$(CURDIR)" "$(CURDIR)" "$(CURDIR)" "$(CURDIR)" "$(CURDIR)" "$(CURDIR)" "$(CURDIR)" "$(CURDIR)" \
+			"$(CURDIR)" "$(CURDIR)" "$(CURDIR)" "$(CURDIR)" "$(CURDIR)" "$(CURDIR)" "$(CURDIR)" "$(CURDIR)" "$(CURDIR)" "$(CURDIR)" "$(CURDIR)" "$(CURDIR)" "$(CURDIR)" "$(CURDIR)" \
 			"$(CURDIR)" "$$file" >> compile_commands.json; \
 	done
 	@echo '' >> compile_commands.json
@@ -358,6 +406,10 @@ setup: name
 	rm -rf ./build
 	mkdir -p ./releases
 	cp -R ./skeleton ./build
+	# MiSans UI fonts: shipped, but fetched from Xiaomi rather than committed
+	# (see scripts/fetch-misans.py; .cache/ keeps them between builds)
+	python3 ./scripts/fetch-misans.py ./.cache/misans
+	cp ./.cache/misans/font1.ttf ./.cache/misans/font1-arabic.ttf ./build/SYSTEM/res/
 	# skeleton/SYSTEM/osd is layered OSD *source*, assembled per-device at
 	# package time by scripts/assemble-osd.sh. It is never shipped verbatim,
 	# so keep build/ a faithful picture of what ships.
@@ -375,7 +427,7 @@ setup: name
 	rm -f ./build/BASE/Emus/shared/drastic/history.md ./build/BASE/Emus/shared/drastic/launch.sh
 	rm -rf ./build/BASE/Emus/shared/drastic/images
 	# Overlay custom drastic resources (bg, fonts) on top of upstream
-	cp -Rf ./skeleton/BASE/Emus/shared/drastic/resources/ ./build/BASE/Emus/shared/drastic/resources/
+	cp -Rf ./skeleton/BASE/Emus/shared/drastic/resources/. ./build/BASE/Emus/shared/drastic/resources/
 
 	# remove authoring detritus
 	cd ./build && find . -type f -name '.keep' -delete
@@ -439,16 +491,15 @@ package: tidy
 	-mv $(VENDOR_DEST)/* ./build/BASE/ 2>/dev/null; true
 
 	# --- Per-device packaging ---
-	# DEVICES format: device=platform,overlay_res,bg_res,osd_res
+	# DEVICES format: device=platform,overlay_res,osd_res
 	@for dev_entry in $(DEVICES); do \
 		dev=$$(echo $$dev_entry | cut -d= -f1); \
 		dev_config=$$(echo $$dev_entry | cut -d= -f2); \
 		plat=$$(echo $$dev_config | cut -d, -f1); \
 		overlay_res=$$(echo $$dev_config | cut -d, -f2); \
-		bg_res=$$(echo $$dev_config | cut -d, -f3); \
-		osd_res=$$(echo $$dev_config | cut -d, -f4); \
+		osd_res=$$(echo $$dev_config | cut -d, -f3); \
 		\
-		echo "# ===== Packaging $$dev (platform=$$plat, overlays=$$overlay_res, bg=$$bg_res, osd=$$osd_res) ====="; \
+		echo "# ===== Packaging $$dev (platform=$$plat, overlays=$$overlay_res, osd=$$osd_res) ====="; \
 		rm -rf ./build/PAYLOAD-$$dev; \
 		mkdir -p ./build/PAYLOAD-$$dev/.system; \
 		\
@@ -481,15 +532,11 @@ package: tidy
 		mkdir -p ./build/PAYLOAD-$$dev/Emus; \
 		cp -R ./build/BASE/Emus/shared ./build/PAYLOAD-$$dev/Emus/shared; \
 		\
-		echo "  assembling Tools/.media ($$bg_res)"; \
-		mkdir -p ./build/PAYLOAD-$$dev/Tools/.media; \
-		cp ./build/BASE/Tools/.media/bg-$$bg_res.png ./build/PAYLOAD-$$dev/Tools/.media/bg.png; \
-		\
 		echo "  creating device marker $$plat-$$dev"; \
 		touch ./build/PAYLOAD-$$dev/$$plat-$$dev; \
 		\
 		echo "  creating MinUI.zip"; \
-		cd ./build/PAYLOAD-$$dev && zip -r MinUI.zip .system .tmp_update Emus Tools $$plat-$$dev && cd ../..; \
+		cd ./build/PAYLOAD-$$dev && zip -r MinUI.zip .system .tmp_update Emus $$plat-$$dev && cd ../..; \
 		cp ./build/PAYLOAD-$$dev/MinUI.zip ./build/BASE/MinUI-$$dev.zip; \
 		\
 		echo "  resolving overlays for $$dev ($$overlay_res)"; \
@@ -503,19 +550,11 @@ package: tidy
 			fi; \
 		done; \
 		\
-		echo "  resolving bg images for $$dev ($$bg_res)"; \
-		find ./build/BASE/Collections ./build/BASE/Favorites \
-			"./build/BASE/Recently Played" ./build/BASE/Roms \
-			-path '*/.media/bg-'"$$bg_res"'.png' 2>/dev/null \
-		| while read f; do \
-			cp "$$f" "$$(dirname "$$f")/bg.png"; \
-		done; \
-		\
 		echo "  creating release zip"; \
 		cd ./build/BASE && zip -r ../../releases/$(RELEASE_NAME)-$$dev.zip \
 			Bios Cheats Collections Emus Favorites Music Overlays \
 			"Recently Played" Roms Saves Shaders Tools trimui Videos *.pakz README.txt \
-			-x '*/bg-*.png' -x '*/720p/*' -x '*/768p/*' -x 'Emus/shared/*' \
+			-x '*/720p/*' -x '*/768p/*' -x 'Emus/shared/*' \
 			&& cd ../..; \
 		cd ./build/PAYLOAD-$$dev && zip -r ../../releases/$(RELEASE_NAME)-$$dev.zip MinUI.zip && cd ../..; \
 		if [ -d ./build/PAKZ/$$plat ]; then \
@@ -523,9 +562,6 @@ package: tidy
 		fi; \
 		\
 		echo "  cleaning up generated files"; \
-		find ./build/BASE/Collections ./build/BASE/Favorites \
-			"./build/BASE/Recently Played" ./build/BASE/Roms \
-			-name "bg.png" -path '*/.media/*' -delete 2>/dev/null; \
 		for overlay_root in ./build/BASE/Overlays; do \
 			if [ -d "$$overlay_root" ]; then \
 				find "$$overlay_root" -mindepth 1 -maxdepth 1 -type d | while read emu_dir; do \

@@ -1,6 +1,7 @@
 #include "ma_internal.h"
 #include "utils.h"
 #include "ma_config.h"
+#include "ma_input.h"
 #include "ma_options.h"
 #include "ma_rewind.h"
 #include "ma_cpu_profile.h"
@@ -108,6 +109,7 @@ char* sync_ref_labels[] = {
 	"Auto",
 	"Screen",
 	"Native",
+	"Emulated",
 	NULL};
 static char* max_ff_labels[] = {
 	"None",
@@ -508,10 +510,10 @@ struct Config config = {
 					 [FE_OPT_SYNC_REFERENCE] = {
 						 .key = "minarch_sync_reference",
 						 .name = "Core Sync",
-						 .desc = "Choose what should be used as a\nreference for the frame rate.\n\"Native\" uses the emulator frame rate,\n\"Screen\" uses the frame rate of the screen.",
+						 .desc = "Choose what should be used as a\nreference for the frame rate.\n\"Native\" uses the emulator frame rate,\n\"Screen\" uses the frame rate of the screen,\n\"Emulated\" follows the game's own timing\n(GPU cores).",
 						 .default_value = SYNC_SRC_AUTO,
 						 .value = SYNC_SRC_AUTO,
-						 .count = 3,
+						 .count = 4,
 						 .values = sync_ref_labels,
 						 .labels = sync_ref_labels,
 					 },
@@ -879,7 +881,7 @@ void setOverclock(int i) {
 		// The hardware bounds span every online cpufreq policy, so a big-core cap
 		// on tg5050 isn't truncated to the little cluster's ceiling.
 		int hw_min, hw_max;
-		if (!PLAT_getCPUHwRangeKhz(&hw_min, &hw_max)) { // no cpufreq (desktop)
+		if (!PLAT_getCPUHwRangeKhz(&hw_min, &hw_max)) { // no cpufreq
 			PWR_setCPUSpeedAuto();
 			break;
 		}
@@ -1265,6 +1267,9 @@ void Config_readOptionsString(char* cfg) {
 		cpu_profile_max_mhz = atoi(value);
 	if (Config_getValue(cfg, "minarch_cpu_affinity", value, NULL))
 		cpu_profile_affinity = CpuProfile_parseAffinity(value);
+	// Per-pak face-button positions (ma_input.h)
+	if (Config_getValue(cfg, "minarch_face_buttons", value, NULL))
+		input_positional_faces = strcmp(value, "positional") == 0;
 	for (int i = 0; config.core.options[i].key; i++) {
 		Option* option = &config.core.options[i];
 		if (!Config_getValue(cfg, option->key, value, &option->lock))

@@ -1,12 +1,14 @@
-// Self-contained (SDL + libm only) compositor for the "Background" game-art
-// style: scale the art to full screen height, right-align it, and fade its left
-// edge into transparency along a diagonal so the game list stays readable over
-// it. Kept free of api.h/config.h so it can run on the thumbnail worker thread
+// Self-contained (SDL + libm + the SDL-free area_scale.c) compositor for the
+// List's game art. The screenshot ("Background" style): scale the art to full
+// screen height, right-align it, and fade its left edge into transparency along
+// a diagonal so the game list stays readable over it. The mix, 2D box art or
+// wheel: fitted whole into a hard-edged box on the right (ArtBg_composeFit). Kept free of api.h/config.h so it can run on the thumbnail worker thread
 // and be unit-tested on the host against plain SDL2.
 #include <math.h>
 #include <stdbool.h>
 #include <SDL2/SDL.h>
 #include "artbg.h"
+#include "area_scale.h"
 
 // ---------------------------------------------------------------------------
 // Geometry tunables. Every value is a fraction of the screen (user-approved,
@@ -46,11 +48,16 @@
 #define ART_BG_EDGE_FADE 0.06f
 // How much of the drawn art hangs off the right edge of the screen. Pushing
 // the image right brings its centre into the visible strip, so more of the
-// screenshot reads, and guarantees the art covers the whole ramp (a 16:9
-// panel would otherwise run out of image partway through the fade).
-#define ART_BG_OVERFLOW 0.30f
+// screenshot reads. Tall stacked shots, and landscape art that, scaled to the
+// full screen height, is at least as wide as the screen, get the larger push;
+// narrower landscape art (4:3 and smaller on a wide panel) only a small one,
+// so it is not pushed off the visible strip.
+#define ART_BG_OVERFLOW_WIDE 0.20f
+#define ART_BG_OVERFLOW_NARROW 0.07f
 // Peak opacity reached to the right of the ramp.
 #define ART_BG_MAX_ALPHA 1.0f
+// The fitted box's size (ArtBg_composeFit) is ARTBG_FIT_BOX_W x ARTBG_FIT_BOX_H_FRAC in artbg.h, shared with the
+// tests; the scraper stores the mix, 2D box art and wheel at that display size.
 
 static bool isWideScreen(int screen_w, int screen_h) {
 	return screen_h > 0 && (float)screen_w >= ART_BG_WIDE_ASPECT * (float)screen_h;
@@ -101,25 +108,34 @@ SDL_Surface* ArtBg_compose(SDL_Surface* art, int screen_w, int screen_h, Uint32 
 	const int H = screen_h;
 
 	// A landscape image is scaled so its HEIGHT equals the screen height, aspect
-	// kept and nothing cropped, then pushed right by ART_BG_OVERFLOW of its
-	// width so more of its middle lands in the visible strip. Wherever that
-	// leaves the image starting later than the nominal fade boundary, the fade
-	// simply begins at the image's own left edge (see ramp_start below), so
-	// there is never a hard vertical cut and the shift never has to be given up.
+	// kept and nothing cropped, then pushed right by a fraction of its width
+	// (ART_BG_OVERFLOW_WIDE or _NARROW, see below) so more of its middle lands
+	// in the visible strip. Wherever that leaves the image starting later than
+	// the nominal fade boundary, the fade simply begins at the image's own left
+	// edge (see ramp_start below), so there is never a hard vertical cut and the
+	// shift never has to be given up.
 	const int x0 = ArtBg_originX(W, H);
 	const int out_w = W - x0;
 	if (out_w <= 0)
 		return NULL;
 
+	// Push-right fraction: the larger one for a tall stacked source, or when
+	// landscape art scaled to the full screen height covers the screen width;
+	// the small one otherwise.
+	const bool tall = (float)art->w < ART_BG_TALL_ASPECT * (float)art->h;
+	const double full_w = (double)art->w * (double)H / (double)art->h;
+	const float overflow = (tall || full_w >= (double)W) ? ART_BG_OVERFLOW_WIDE
+														 : ART_BG_OVERFLOW_NARROW;
+
 	// Box the art is drawn into: the visible strip plus the overflow that hangs
 	// off the right edge.
-	int box_w = (int)((float)out_w / (1.0f - ART_BG_OVERFLOW) + 0.5f);
+	int box_w = (int)((float)out_w / (1.0f - overflow) + 0.5f);
 	if (box_w < 1)
 		box_w = 1;
 
 	SDL_Rect crop = {0, 0, art->w, art->h};
 	int draw_w;
-	if ((float)art->w < ART_BG_TALL_ASPECT * (float)art->h) {
+	if (tall) {
 		// Stacked source: scale it to the box width and keep the top band that
 		// fills the screen height, so as much of the top screen as fits shows.
 		int band = (int)((double)H * (double)art->w / (double)box_w + 0.5);
@@ -138,7 +154,7 @@ SDL_Surface* ArtBg_compose(SDL_Surface* art, int screen_w, int screen_h, Uint32 
 		if (draw_w < 1)
 			draw_w = 1;
 	}
-	const int shift = (int)(ART_BG_OVERFLOW * (float)draw_w + 0.5f);
+	const int shift = (int)(overflow * (float)draw_w + 0.5f);
 	const int draw_left = W - draw_w + shift;
 
 	// Render the art at final scale into a matching-format buffer. Copy (blend
@@ -248,5 +264,93 @@ SDL_Surface* ArtBg_compose(SDL_Surface* art, int screen_w, int screen_h, Uint32 
 	SDL_UnlockSurface(out);
 	SDL_UnlockSurface(scaled);
 	SDL_FreeSurface(scaled);
+	return out;
+}
+
+SDL_Rect ArtBg_fitRect(int screen_w, int screen_h, int margin) {
+	if (margin < 0)
+		margin = 0;
+	int w = ARTBG_FIT_BOX_W;
+	if (w > screen_w - margin)
+		w = screen_w - margin;
+	if (w < 0)
+		w = 0;
+	int h = (int)floorf((float)screen_h * ARTBG_FIT_BOX_H_FRAC + 0.5f);
+	if (h > screen_h)
+		h = screen_h;
+	return (SDL_Rect){screen_w - margin - w, (screen_h - h) / 2, w, h};
+}
+
+int ArtBg_fitOriginX(int screen_w, int screen_h, int margin) {
+	return ArtBg_fitRect(screen_w, screen_h, margin).x;
+}
+
+SDL_Surface* ArtBg_composeFit(SDL_Surface* art, int screen_w, int screen_h, int margin, Uint32 pixel_format) {
+	if (!art || art->w <= 0 || art->h <= 0 || screen_w <= 0 || screen_h <= 0)
+		return NULL;
+
+	const SDL_Rect box = ArtBg_fitRect(screen_w, screen_h, margin);
+	const int out_w = box.w, out_h = box.h;
+	if (out_w <= 0 || out_h <= 0)
+		return NULL;
+
+	// Fit the whole art into the box, aspect kept, right-aligned (its right edge on the box's, so the art keeps the
+	// List's right margin whatever its shape) and vertically centred.
+	int draw_w, draw_h;
+	if ((double)art->w * (double)out_h >= (double)out_w * (double)art->h) {
+		draw_w = out_w;
+		draw_h = (int)((double)art->h * (double)out_w / (double)art->w + 0.5);
+	} else {
+		draw_h = out_h;
+		draw_w = (int)((double)art->w * (double)out_h / (double)art->h + 0.5);
+	}
+	if (draw_w < 1)
+		draw_w = 1;
+	if (draw_h < 1)
+		draw_h = 1;
+	if (draw_w > out_w)
+		draw_w = out_w;
+	if (draw_h > out_h)
+		draw_h = out_h;
+	const int dx = out_w - draw_w, dy = (out_h - draw_h) / 2;
+
+	// The scalers work on ARGB8888 words with straight alpha: the art in that format (the worker's decode already is
+	// on the device), and the box built in it, converted to pixel_format at the end if that differs.
+	SDL_Surface* src = art;
+	if (art->format->format != SDL_PIXELFORMAT_ARGB8888) {
+		src = SDL_ConvertSurfaceFormat(art, SDL_PIXELFORMAT_ARGB8888, 0);
+		if (!src)
+			return NULL;
+	}
+	SDL_Surface* out = SDL_CreateRGBSurfaceWithFormat(0, out_w, out_h, 32, SDL_PIXELFORMAT_ARGB8888);
+	if (!out) {
+		if (src != art)
+			SDL_FreeSurface(src);
+		return NULL;
+	}
+	SDL_FillRect(out, NULL, 0); // fully transparent ground: the art's own edge is the hard edge, no fade
+
+	// Smooth both ways (never SDL_BlitScaled's nearest): shrinking area-averages every source pixel (alpha-weighted, so
+	// transparent surroundings don't darken edges); growing (a small wheel) is bilinear. Written straight into the
+	// fitted rect, so the art's straight alpha is kept and the rest stays transparent.
+	const int spitch = src->pitch / 4, opitch = out->pitch / 4;
+	Uint32* dst = (Uint32*)out->pixels + (size_t)dy * opitch + dx;
+	int rc;
+	if (draw_w <= src->w && draw_h <= src->h)
+		rc = AreaScale_argb(src->pixels, src->w, src->h, spitch, dst, draw_w, draw_h, opitch);
+	else
+		rc = AreaScale_bilinearCover(src->pixels, src->w, src->h, spitch, dst, draw_w, draw_h, opitch,
+									 (float)draw_w / (float)src->w, 0.0f, 0.0f);
+	if (src != art)
+		SDL_FreeSurface(src);
+	if (rc != 0) {
+		SDL_FreeSurface(out);
+		return NULL;
+	}
+	if (pixel_format != SDL_PIXELFORMAT_ARGB8888) {
+		SDL_Surface* conv = SDL_ConvertSurfaceFormat(out, pixel_format, 0);
+		SDL_FreeSurface(out);
+		out = conv;
+	}
 	return out;
 }

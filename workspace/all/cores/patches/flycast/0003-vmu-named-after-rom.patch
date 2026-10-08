@@ -1,0 +1,65 @@
+# license: modifies Flycast (https://github.com/flyinghead/flycast), GPL-2.0 (LICENSE); this patch is distributed under the same license.
+diff --git a/shell/libretro/oslib.cpp b/shell/libretro/oslib.cpp
+index a32d109..541c312 100644
+--- a/shell/libretro/oslib.cpp
++++ b/shell/libretro/oslib.cpp
+@@ -37,31 +37,40 @@ extern retro_environment_t environ_cb;
+ namespace hostfs
+ {
+ 
++// NX Redux: a game's discs share one card, so drop a "(Disc N)" / "(Disc N of M)"
++// tag from the content name (minarch passes the disc file, not the .m3u)
++static std::string vmuContentName()
++{
++	std::string name(content_name);
++	size_t tag = name.find(" (Disc ");
++	if (tag != std::string::npos)
++	{
++		size_t end = name.find(')', tag);
++		if (end != std::string::npos)
++			name.erase(tag, end - tag + 1);
++	}
++	return name;
++}
++
+ std::string getVmuPath(const std::string& port, bool save)
+ {
+ 	if ((per_content_vmus == 1 && port == "A1")
+ 			|| per_content_vmus == 2)
+ 	{
++		// NX Redux (shared with nx-mobile): name per-game VMUs after the ROM file (not the disc's game ID), like
++		// every other save, so a card follows its game between devices. A game-ID file from an earlier run is read
++		// once, then rewritten as <rom>.A1.bin and deleted (maple_devs.cpp OnSetup: the save path differs from the read one).
+ 		std::string vmuDir = vmu_dir_no_slash + std::string(PATH_DEFAULT_SLASH());
+-		if (settings.platform.isConsole() && !settings.content.gameId.empty())
+-		{
+-			constexpr std::string_view INVALID_CHARS { " /\\:*?|<>" };
+-			std::string vmuName = settings.content.gameId;
+-			for (char &c: vmuName)
+-				if (INVALID_CHARS.find(c) != INVALID_CHARS.npos)
+-					c = '_';
+-			vmuName += "." + port + ".bin";
+-			std::string wpath = vmuDir + vmuName;
+-			if (save || file_exists(wpath.c_str()))
+-				return wpath;
+-			// Legacy path with rom name
+-			std::string rpath = vmuDir + std::string(content_name) + "." + port + ".bin";
+-			if (file_exists(rpath.c_str()))
+-				return rpath;
+-			else
+-				return wpath;
+-		}
+-		return vmuDir + std::string(content_name) + "." + port + ".bin";
++		std::string byName = vmuDir + vmuContentName() + "." + port + ".bin";
++		if (save || file_exists(byName.c_str()) || !settings.platform.isConsole() || settings.content.gameId.empty())
++			return byName;
++		constexpr std::string_view INVALID_CHARS { " /\\:*?|<>" };
++		std::string vmuName = settings.content.gameId;
++		for (char &c: vmuName)
++			if (INVALID_CHARS.find(c) != INVALID_CHARS.npos)
++				c = '_';
++		std::string byId = vmuDir + vmuName + "." + port + ".bin";
++		return file_exists(byId.c_str()) ? byId : byName;
+ 	}
+ 	else {
+ 		return std::string(game_dir_no_slash) + std::string(PATH_DEFAULT_SLASH()) + "vmu_save_" + port + ".bin";

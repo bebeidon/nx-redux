@@ -1,3 +1,4 @@
+# license: modifies RACE (https://github.com/libretro/race), GPL-2.0 (license.txt); this patch is distributed under the same license.
 diff --git forkSrcPrefix/Makefile forkDstPrefix/Makefile
 index 792a6d82915c32edd3df6ceec541499f6ca25ac5..dc02b361d7db47e011b6d3addf89cfb31503575a 100644
 --- forkSrcPrefix/Makefile

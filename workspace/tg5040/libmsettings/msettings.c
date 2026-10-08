@@ -673,6 +673,25 @@ void InitSettings(void) {
 	// This will implicitly update all other settings based on FN switch state
 	SetFnMode(settings->fn_mode);
 }
+// InitSettings without touching the hardware: maps the shared settings as a
+// client and applies nothing (no mixer defaults, no FN-mode re-apply). For a
+// short-lived tool that changes one setting while audio and video are live,
+// e.g. osdctl from the OSD; InitSettings' re-apply briefly runs the codec at
+// full scale (a speaker pop) and resets the backlight (a flash) (issue #164).
+// Falls back to InitSettings when there is no host yet.
+void InitSettingsNoApply(void) {
+	char* device = getenv("DEVICE");
+	is_brick = exactMatch("brick", device);
+	is_brickpro = exactMatch("brickpro", device);
+	sprintf(SettingsPath, "%s/msettings.bin", getenv("USERDATA_PATH"));
+
+	shm_fd = shm_open(SHM_KEY, O_RDWR, 0644);
+	if (shm_fd == -1) {
+		InitSettings();
+		return;
+	}
+	settings = mmap(NULL, shm_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+}
 int InitializedSettings(void) {
 	return (settings != NULL);
 }
@@ -891,8 +910,10 @@ void SetHDMI(int value) {};
 void SetFnMode(int value) {
 	settings->fn_mode = value;
 	if (settings->fn_mode) {
-		if (GetFnVolume() != SETTINGS_DEFAULT_FN_NO_CHANGE)
-			SetRawVolume(scaleVolume(GetFnVolume()));
+		// Re-apply even when the FN volume is "Unchanged": InitSettings() runs
+		// setMixerDefaults() in every process, which leaves "digital volume"
+		// at full scale until something sets it again (issue #160).
+		SetRawVolume(scaleVolume(GetVolume()));
 		// custom mute mode display settings
 		if (GetFnBrightness() != SETTINGS_DEFAULT_FN_NO_CHANGE)
 			SetRawBrightness(scaleBrightness(GetFnBrightness()));
@@ -1633,11 +1654,13 @@ void SetRawVolume(int val) { // in: 0-100
 		// linear percent mapping parks 50% at ~-37dB — inaudible on the speaker.
 		// Taper: dB = 36.4*log10(val/100) - 4.6, i.e. 50% ≈ -15dB; the top is
 		// held 4.6dB under full scale — the speaker amp audibly distorts when
-		// the DAC runs at 0dB.
+		// the DAC runs at 0dB. Below 40% it bends down a further
+		// 13.8*((40-val)/35)^2 dB so the first step (5%) lands at ~-66dB,
+		// near the old linear mapping's -68dB, instead of a loud -52dB.
 		static const unsigned char DIGITAL_ATT_TAPER[101] = {
-			63, 63, 57, 52, 48, 45, 42, 40, 38, 37, 35, 34, 33, 32, 31, 30,
-			29, 28, 27, 27, 26, 25, 25, 24, 23, 23, 22, 22, 21, 21, 20, 20,
-			19, 19, 19, 18, 18, 18, 17, 17, 16, 16, 16, 15, 15, 15, 15, 14,
+			63, 63, 63, 63, 60, 57, 54, 51, 48, 46, 44, 42, 40, 39, 37, 36,
+			35, 33, 32, 31, 30, 29, 28, 27, 26, 25, 24, 23, 23, 22, 21, 21,
+			20, 20, 19, 19, 18, 18, 17, 17, 16, 16, 16, 15, 15, 15, 15, 14,
 			14, 14, 13, 13, 13, 13, 12, 12, 12, 12, 11, 11, 11, 11, 10, 10,
 			10, 10, 10, 9, 9, 9, 9, 9, 8, 8, 8, 8, 8, 8, 7, 7,
 			7, 7, 7, 7, 6, 6, 6, 6, 6, 6, 5, 5, 5, 5, 5, 5,

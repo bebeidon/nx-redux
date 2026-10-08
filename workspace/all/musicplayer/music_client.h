@@ -7,6 +7,9 @@
 int MusicClient_init(const char* daemon_path);
 void MusicClient_quit(void);
 void MusicClient_update(void);
+/* Refresh the snapshot when the copy is older than max_age_ms. MusicClient_update
+ * uses the 250 ms status cadence; the spectrum asks for fresher samples. */
+void MusicClient_updateWithin(int max_age_ms);
 void MusicClient_disconnect(void);
 const MusicSnapshotWire* MusicClient_snapshot(void);
 const char* MusicClient_error(void);

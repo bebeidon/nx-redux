@@ -20,6 +20,13 @@ static bool cfg_bt_explicit = false;
 
 NextUISettings settings = {0};
 
+// minuisettings.txt keys for the per-tab main menu styles, indexed by MENU_CAT_*.
+static const char* menu_style_keys[MENU_CAT_COUNT] = {
+	"menuStyleConsoles", "menuStyleCollections", "menuStyleTools"};
+// minuisettings.txt keys for the per-tab main menu orientations, indexed by MENU_CAT_*.
+static const char* menu_orient_keys[MENU_CAT_COUNT] = {
+	"menuOrientConsoles", "menuOrientCollections", "menuOrientTools"};
+
 // deprecated
 uint32_t THEME_COLOR1_255;
 uint32_t THEME_COLOR2_255;
@@ -42,22 +49,33 @@ void CFG_defaults(NextUISettings* cfg) {
 		.color5_255 = CFG_DEFAULT_COLOR5,
 		.color6_255 = CFG_DEFAULT_COLOR6,
 		.color7_255 = CFG_DEFAULT_COLOR7,
-		.thumbRadius = CFG_DEFAULT_THUMBRADIUS,
-		.gameArtWidth = CFG_DEFAULT_GAMEARTWIDTH,
-		.gameArtStyle = CFG_DEFAULT_GAMEARTSTYLE,
-		.gameArtType = CFG_DEFAULT_GAMEARTTYPE,
+		.menuStyle = {CFG_DEFAULT_MENUSTYLE_FOR(MENU_CAT_CONSOLES), CFG_DEFAULT_MENUSTYLE_FOR(MENU_CAT_COLLECTIONS),
+					  CFG_DEFAULT_MENUSTYLE_FOR(MENU_CAT_TOOLS)},
+		.gameListStyle = CFG_DEFAULT_GAMELISTSTYLE,
+		.menuOrient = {CFG_DEFAULT_MENUORIENT, CFG_DEFAULT_MENUORIENT, CFG_DEFAULT_MENUORIENT},
+		.gameListOrient = CFG_DEFAULT_GAMELISTORIENT,
+		.gameListVAlign = CFG_DEFAULT_GAMELISTVALIGN,
+		.homeStyle = CFG_DEFAULT_HOMESTYLE,
 		.showFolderNamesAtRoot = CFG_DEFAULT_SHOWFOLDERNAMESATROOT,
 
 		.showClock = CFG_DEFAULT_SHOWCLOCK,
 		.clock24h = CFG_DEFAULT_CLOCK24H,
 		.showBatteryPercent = CFG_DEFAULT_SHOWBATTERYPERCENT,
 		.showSearchHint = CFG_DEFAULT_SHOWSEARCHHINT,
+		.showRecentHint = CFG_DEFAULT_SHOWRECENTHINT,
+		.showNetplayHint = CFG_DEFAULT_SHOWNETPLAYHINT,
 		.showMenuAnimations = CFG_DEFAULT_SHOWMENUANIMATIONS,
 		.showMenuTransitions = CFG_DEFAULT_SHOWMENUTRANSITIONS,
 		.showRecents = CFG_DEFAULT_SHOWRECENTS,
 		.showTools = CFG_DEFAULT_SHOWTOOLS,
+		.showHome = CFG_DEFAULT_SHOWHOME,
+		.consoleArt = CFG_DEFAULT_CONSOLEART,
+		.gameListArt = CFG_DEFAULT_GAMELISTART,
+		.backdropArt = CFG_DEFAULT_BACKDROPART,
+		.buttonHints = CFG_DEFAULT_BUTTONHINTS,
+		.extraInfo = CFG_DEFAULT_EXTRAINFO,
+		.pageTitle = CFG_DEFAULT_PAGETITLE,
 		.showCollections = CFG_DEFAULT_SHOWCOLLECTIONS,
-		.showGameArt = CFG_DEFAULT_SHOWGAMEART,
 		.showEmulators = CFG_DEFAULT_SHOWEMULATORS,
 		.gameSwitcherScaling = CFG_DEFAULT_GAMESWITCHERSCALING,
 		.gameSwitcherResumableOnly = CFG_DEFAULT_GAMESWITCHERRESUMABLEONLY,
@@ -72,7 +90,6 @@ void CFG_defaults(NextUISettings* cfg) {
 		.powerOffProtection = CFG_DEFAULT_POWEROFFPROTECTION,
 
 		.haptics = CFG_DEFAULT_HAPTICS,
-		.romsUseFolderBackground = CFG_DEFAULT_ROMSUSEFOLDERBACKGROUND,
 		.saveFormat = CFG_DEFAULT_SAVEFORMAT,
 		.stateFormat = CFG_DEFAULT_STATEFORMAT,
 		.useExtractedFileName = CFG_DEFAULT_EXTRACTEDFILENAME,
@@ -109,7 +126,6 @@ void CFG_defaults(NextUISettings* cfg) {
 		.debugLogging = CFG_DEFAULT_DEBUG_LOGGING,
 		.buttonLayout = CFG_DEFAULT_BUTTON_LAYOUT,
 		.hintLabels = CFG_DEFAULT_HINT_LABELS,
-		.uiScale = CFG_DEFAULT_UI_SCALE,
 	};
 
 	*cfg = defaults;
@@ -140,10 +156,6 @@ void CFG_init(FontLoad_callback_t cb, ColorSet_callback_t ccb) {
 				CFG_setColor(line[5] - '0', RGBA_parseHex(line + 7));
 				continue;
 			}
-			if (sscanf(line, "radius=%i", &temp_value) == 1) {
-				CFG_setThumbnailRadius(temp_value);
-				continue;
-			}
 			if (sscanf(line, "showclock=%i", &temp_value) == 1) {
 				CFG_setShowClock((bool)temp_value);
 				continue;
@@ -158,6 +170,14 @@ void CFG_init(FontLoad_callback_t cb, ColorSet_callback_t ccb) {
 			}
 			if (sscanf(line, "searchhint=%i", &temp_value) == 1) {
 				CFG_setShowSearchHint((bool)temp_value);
+				continue;
+			}
+			if (sscanf(line, "recenthint=%i", &temp_value) == 1) {
+				CFG_setShowRecentHint((bool)temp_value);
+				continue;
+			}
+			if (sscanf(line, "netplayhint=%i", &temp_value) == 1) {
+				CFG_setShowNetplayHint((bool)temp_value);
 				continue;
 			}
 			if (sscanf(line, "menuanim=%i", &temp_value) == 1) {
@@ -176,16 +196,36 @@ void CFG_init(FontLoad_callback_t cb, ColorSet_callback_t ccb) {
 				CFG_setShowTools((bool)temp_value);
 				continue;
 			}
+			if (sscanf(line, "showhome=%i", &temp_value) == 1) {
+				CFG_setShowHome((bool)temp_value);
+				continue;
+			}
+			if (sscanf(line, "menucontrollerart=%i", &temp_value) == 1) {
+				CFG_setConsoleArt(temp_value);
+				continue;
+			}
+			if (sscanf(line, "gamelistart=%i", &temp_value) == 1) {
+				CFG_setGameListArt(temp_value);
+				continue;
+			}
+			if (sscanf(line, "backdropart=%i", &temp_value) == 1) {
+				CFG_setBackdropArt(temp_value);
+				continue;
+			}
+			if (sscanf(line, "buttonhints=%i", &temp_value) == 1) {
+				CFG_setButtonHints((bool)temp_value);
+				continue;
+			}
+			if (sscanf(line, "pagetitle=%i", &temp_value) == 1) {
+				CFG_setPageTitle((bool)temp_value);
+				continue;
+			}
 			if (sscanf(line, "collections=%i", &temp_value) == 1) {
 				CFG_setShowCollections((bool)temp_value);
 				continue;
 			}
 			if (sscanf(line, "emulators=%i", &temp_value) == 1) {
 				CFG_setShowEmulators((bool)temp_value);
-				continue;
-			}
-			if (sscanf(line, "gameart=%i", &temp_value) == 1) {
-				CFG_setShowGameArt((bool)temp_value);
 				continue;
 			}
 			if (sscanf(line, "screentimeout=%i", &temp_value) == 1) {
@@ -228,10 +268,6 @@ void CFG_init(FontLoad_callback_t cb, ColorSet_callback_t ccb) {
 				CFG_setHaptics((bool)temp_value);
 				continue;
 			}
-			if (sscanf(line, "romfolderbg=%i", &temp_value) == 1) {
-				CFG_setRomsUseFolderBackground((bool)temp_value);
-				continue;
-			}
 			if (sscanf(line, "saveFormat=%i", &temp_value) == 1) {
 				CFG_setSaveFormat(temp_value);
 				continue;
@@ -249,16 +285,52 @@ void CFG_init(FontLoad_callback_t cb, ColorSet_callback_t ccb) {
 				CFG_setFnLEDs(temp_value);
 				continue;
 			}
-			if (sscanf(line, "artWidth=%i", &temp_value) == 1) {
-				CFG_setGameArtWidth((double)temp_value / 100.0);
+			{
+				bool matched = false;
+				for (int c = 0; c < MENU_CAT_COUNT; c++) {
+					char fmt[48];
+					snprintf(fmt, sizeof(fmt), "%s=%%i", menu_style_keys[c]);
+					if (sscanf(line, fmt, &temp_value) == 1) {
+						CFG_setMenuStyle(c, temp_value);
+						matched = true;
+						break;
+					}
+				}
+				if (matched)
+					continue;
+			}
+			if (sscanf(line, "gameListStyle=%i", &temp_value) == 1) {
+				CFG_setGameListStyle(temp_value);
 				continue;
 			}
-			if (sscanf(line, "artStyle=%i", &temp_value) == 1) {
-				CFG_setGameArtStyle(temp_value);
+			{
+				bool matched = false;
+				for (int c = 0; c < MENU_CAT_COUNT; c++) {
+					char fmt[48];
+					snprintf(fmt, sizeof(fmt), "%s=%%i", menu_orient_keys[c]);
+					if (sscanf(line, fmt, &temp_value) == 1) {
+						CFG_setMenuOrient(c, temp_value);
+						matched = true;
+						break;
+					}
+				}
+				if (matched)
+					continue;
+			}
+			if (sscanf(line, "gameListOrient=%i", &temp_value) == 1) {
+				CFG_setGameListOrient(temp_value);
 				continue;
 			}
-			if (sscanf(line, "artType=%i", &temp_value) == 1) {
-				CFG_setGameArtType(temp_value);
+			if (sscanf(line, "gameListVerticalAlign=%i", &temp_value) == 1) {
+				CFG_setGameListVAlign(temp_value);
+				continue;
+			}
+			if (sscanf(line, "homeStyle=%i", &temp_value) == 1) {
+				CFG_setHomeStyle(temp_value);
+				continue;
+			}
+			if (sscanf(line, "extraInfo=%i", &temp_value) == 1) {
+				CFG_setExtraInfo((bool)temp_value);
 				continue;
 			}
 			if (sscanf(line, "wifi=%i", &temp_value) == 1) {
@@ -381,10 +453,6 @@ void CFG_init(FontLoad_callback_t cb, ColorSet_callback_t ccb) {
 			}
 			if (sscanf(line, "hintlabels=%i", &temp_value) == 1) {
 				CFG_setHintLabels((bool)temp_value);
-				continue;
-			}
-			if (UIScale_parseLine(line, &temp_value)) {
-				CFG_setUIScale(temp_value);
 				continue;
 			}
 			if (sscanf(line, "keepAwakeUSB=%i", &temp_value) == 1) {
@@ -566,6 +634,24 @@ void CFG_setShowSearchHint(bool show) {
 	CFG_sync();
 }
 
+bool CFG_getShowRecentHint(void) {
+	return settings.showRecentHint;
+}
+
+void CFG_setShowRecentHint(bool show) {
+	settings.showRecentHint = show;
+	CFG_sync();
+}
+
+bool CFG_getShowNetplayHint(void) {
+	return settings.showNetplayHint;
+}
+
+void CFG_setShowNetplayHint(bool show) {
+	settings.showNetplayHint = show;
+	CFG_sync();
+}
+
 bool CFG_getMenuAnimations(void) {
 	return settings.showMenuAnimations;
 }
@@ -581,15 +667,6 @@ bool CFG_getMenuTransitions(void) {
 
 void CFG_setMenuTransitions(bool show) {
 	settings.showMenuTransitions = show;
-	CFG_sync();
-}
-
-int CFG_getThumbnailRadius(void) {
-	return settings.thumbRadius;
-}
-
-void CFG_setThumbnailRadius(int radius) {
-	settings.thumbRadius = clamp(radius, 0, 24);
 	CFG_sync();
 }
 
@@ -611,6 +688,76 @@ void CFG_setShowTools(bool show) {
 	CFG_sync();
 }
 
+bool CFG_getShowHome(void) {
+	return settings.showHome;
+}
+
+void CFG_setShowHome(bool show) {
+	settings.showHome = show;
+	CFG_sync();
+}
+
+int CFG_getConsoleArt(void) {
+	return settings.consoleArt;
+}
+
+void CFG_setConsoleArt(int art) {
+	// out of range → the default (Controller); 0/1 keep the old Hide/Show meaning
+	settings.consoleArt = (art < CONSOLE_ART_BACKGROUND || art >= CONSOLE_ART_COUNT) ? CFG_DEFAULT_CONSOLEART : art;
+	CFG_sync();
+}
+
+bool CFG_getMenuControllerArt(void) {
+	return settings.consoleArt == CONSOLE_ART_CONTROLLER;
+}
+
+int CFG_getGameListArt(void) {
+	return settings.gameListArt;
+}
+
+void CFG_setGameListArt(int art) {
+	// out of range → the default, like the other game list keys (menustyle_model.h)
+	settings.gameListArt = (art < GAME_LIST_ART_SCREENSHOT || art >= GAME_LIST_ART_COUNT) ? CFG_DEFAULT_GAMELISTART : art;
+	CFG_sync();
+}
+
+int CFG_getBackdropArt(void) {
+	return settings.backdropArt;
+}
+
+void CFG_setBackdropArt(int art) {
+	// out of range → the default, like the other game list keys (menustyle_model.h)
+	settings.backdropArt = (art < BACKDROP_ART_BOXART3D || art >= BACKDROP_ART_COUNT) ? CFG_DEFAULT_BACKDROPART : art;
+	CFG_sync();
+}
+
+bool CFG_getButtonHints(void) {
+	return settings.buttonHints;
+}
+
+void CFG_setButtonHints(bool show) {
+	settings.buttonHints = show;
+	CFG_sync();
+}
+
+bool CFG_getExtraInfo(void) {
+	return settings.extraInfo;
+}
+
+void CFG_setExtraInfo(bool show) {
+	settings.extraInfo = show;
+	CFG_sync();
+}
+
+bool CFG_getPageTitle(void) {
+	return settings.pageTitle;
+}
+
+void CFG_setPageTitle(bool show) {
+	settings.pageTitle = show;
+	CFG_sync();
+}
+
 bool CFG_getShowCollections(void) {
 	return settings.showCollections;
 }
@@ -620,30 +767,12 @@ void CFG_setShowCollections(bool show) {
 	CFG_sync();
 }
 
-bool CFG_getShowGameArt(void) {
-	return settings.showGameArt;
-}
-
-void CFG_setShowGameArt(bool show) {
-	settings.showGameArt = show;
-	CFG_sync();
-}
-
 bool CFG_getShowEmulators(void) {
 	return settings.showEmulators;
 }
 
 void CFG_setShowEmulators(bool show) {
 	settings.showEmulators = show;
-	CFG_sync();
-}
-
-bool CFG_getRomsUseFolderBackground(void) {
-	return settings.romsUseFolderBackground;
-}
-
-void CFG_setRomsUseFolderBackground(bool folder) {
-	settings.romsUseFolderBackground = folder;
 	CFG_sync();
 }
 
@@ -738,45 +867,80 @@ void CFG_setFnLEDs(bool on) {
 	CFG_sync();
 }
 
-double CFG_getGameArtWidth(void) {
-	return settings.gameArtWidth;
+// The mapping lives in menustyle_model.h (host-tested): the setters store the value (out of range → the
+// default; a main-menu Backdrop is kept as written), the getters map it (main-menu Backdrop → Carousel).
+int CFG_getMenuStyle(int category) {
+	if (category < 0 || category >= MENU_CAT_COUNT)
+		return MENU_STYLE_LIST;
+	return MenuStyle_mainMenu(settings.menuStyle[category]);
 }
 
-void CFG_setGameArtWidth(double zeroToOne) {
-	settings.gameArtWidth = clampd(zeroToOne, 0.0, 1.0);
+void CFG_setMenuStyle(int category, int style) {
+	if (category < 0 || category >= MENU_CAT_COUNT)
+		return;
+	settings.menuStyle[category] = MenuStyle_storeMainMenu(style);
 	CFG_sync();
 }
 
-int CFG_getGameArtStyle(void) {
-	return settings.gameArtStyle;
+int CFG_getGameListStyle(void) {
+	return MenuStyle_gameList(settings.gameListStyle);
 }
 
-void CFG_setGameArtStyle(int style) {
-	if (style < ART_STYLE_THUMBNAIL)
-		style = ART_STYLE_THUMBNAIL;
-	else if (style > ART_STYLE_BACKGROUND)
-		style = ART_STYLE_BACKGROUND;
-	settings.gameArtStyle = style;
+void CFG_setGameListStyle(int style) {
+	settings.gameListStyle = MenuStyle_storeGameList(style);
 	CFG_sync();
 }
 
-int CFG_getGameArtType(void) {
-	return settings.gameArtType;
+// Orientation: stored independently of the style (MenuStyle_storeOrient: out of range → Horizontal); the
+// effective getters read Horizontal for List and Grid (menustyle_model.h, host-tested).
+int CFG_getMenuOrient(int category) {
+	if (category < 0 || category >= MENU_CAT_COUNT)
+		return MENU_ORIENT_HORIZONTAL;
+	return MenuStyle_storeOrient(settings.menuOrient[category]);
 }
 
-void CFG_setGameArtType(int type) {
-	if (type < ART_TYPE_MIX)
-		type = ART_TYPE_MIX;
-	else if (type > ART_TYPE_BOXART)
-		type = ART_TYPE_BOXART;
-	settings.gameArtType = type;
+void CFG_setMenuOrient(int category, int orient) {
+	if (category < 0 || category >= MENU_CAT_COUNT)
+		return;
+	settings.menuOrient[category] = MenuStyle_storeOrient(orient);
 	CFG_sync();
 }
 
-int CFG_getEffectiveArtType(void) {
-	if (settings.gameArtStyle == ART_STYLE_BACKGROUND)
-		return ART_TYPE_SCREENSHOT;
-	return settings.gameArtType;
+int CFG_getGameListOrient(void) {
+	return MenuStyle_storeOrient(settings.gameListOrient);
+}
+
+void CFG_setGameListOrient(int orient) {
+	settings.gameListOrient = MenuStyle_storeOrient(orient);
+	CFG_sync();
+}
+
+int CFG_getGameListVAlign(void) {
+	return MenuStyle_storeVAlign(settings.gameListVAlign);
+}
+
+void CFG_setGameListVAlign(int valign) {
+	settings.gameListVAlign = MenuStyle_storeVAlign(valign);
+	CFG_sync();
+}
+
+int CFG_getHomeStyle(void) {
+	return MenuStyle_storeHome(settings.homeStyle);
+}
+
+void CFG_setHomeStyle(int style) {
+	settings.homeStyle = MenuStyle_storeHome(style);
+	CFG_sync();
+}
+
+int CFG_getMenuOrientEffective(int category) {
+	if (category < 0 || category >= MENU_CAT_COUNT)
+		return MENU_ORIENT_HORIZONTAL;
+	return MenuStyle_mainMenuOrient(settings.menuStyle[category], settings.menuOrient[category]);
+}
+
+int CFG_getGameListOrientEffective(void) {
+	return MenuStyle_gameListOrient(settings.gameListStyle, settings.gameListOrient);
 }
 
 bool CFG_getWifi(void) {
@@ -1072,16 +1236,18 @@ void CFG_setHintLabels(bool physical) {
 	CFG_sync();
 }
 
-int CFG_getUIScale(void) {
-	return settings.uiScale;
-}
-
-void CFG_setUIScale(int scale) {
-	settings.uiScale = UIScale_sanitize(scale);
-	CFG_sync();
-}
-
 void CFG_get(const char* key, char* value) {
+	for (int c = 0; c < MENU_CAT_COUNT; c++) {
+		if (strcmp(key, menu_style_keys[c]) == 0) {
+			sprintf(value, "%i", CFG_getMenuStyle(c));
+			return;
+		}
+		if (strcmp(key, menu_orient_keys[c]) == 0) {
+			sprintf(value, "%i", CFG_getMenuOrient(c));
+			return;
+		}
+	}
+
 	if (strcmp(key, "font") == 0) {
 		sprintf(value, "%i", CFG_getFontId());
 	} else if (strcmp(key, "color1") == 0) {
@@ -1098,8 +1264,6 @@ void CFG_get(const char* key, char* value) {
 		sprintf(value, "\"0x%08X\"", CFG_getColor(6));
 	} else if (strcmp(key, "color7") == 0) {
 		sprintf(value, "\"0x%08X\"", CFG_getColor(7));
-	} else if (strcmp(key, "radius") == 0) {
-		sprintf(value, "%i", CFG_getThumbnailRadius());
 	} else if (strcmp(key, "showclock") == 0) {
 		sprintf(value, "%i", CFG_getShowClock());
 	} else if (strcmp(key, "clock24h") == 0) {
@@ -1108,6 +1272,10 @@ void CFG_get(const char* key, char* value) {
 		sprintf(value, "%i", CFG_getShowBatteryPercent());
 	} else if (strcmp(key, "searchhint") == 0) {
 		sprintf(value, "%i", CFG_getShowSearchHint());
+	} else if (strcmp(key, "recenthint") == 0) {
+		sprintf(value, "%i", CFG_getShowRecentHint());
+	} else if (strcmp(key, "netplayhint") == 0) {
+		sprintf(value, "%i", CFG_getShowNetplayHint());
 	} else if (strcmp(key, "menuanim") == 0) {
 		sprintf(value, "%i", CFG_getMenuAnimations());
 	} else if (strcmp(key, "menutransitions") == 0) {
@@ -1116,12 +1284,22 @@ void CFG_get(const char* key, char* value) {
 		sprintf(value, "%i", CFG_getShowRecents());
 	} else if (strcmp(key, "tools") == 0) {
 		sprintf(value, "%i", CFG_getShowTools());
+	} else if (strcmp(key, "showhome") == 0) {
+		sprintf(value, "%i", CFG_getShowHome());
+	} else if (strcmp(key, "menucontrollerart") == 0) {
+		sprintf(value, "%i", CFG_getConsoleArt());
+	} else if (strcmp(key, "gamelistart") == 0) {
+		sprintf(value, "%i", CFG_getGameListArt());
+	} else if (strcmp(key, "backdropart") == 0) {
+		sprintf(value, "%i", CFG_getBackdropArt());
+	} else if (strcmp(key, "buttonhints") == 0) {
+		sprintf(value, "%i", CFG_getButtonHints());
+	} else if (strcmp(key, "pagetitle") == 0) {
+		sprintf(value, "%i", CFG_getPageTitle());
 	} else if (strcmp(key, "collections") == 0) {
 		sprintf(value, "%i", CFG_getShowCollections());
 	} else if (strcmp(key, "emulators") == 0) {
 		sprintf(value, "%i", CFG_getShowEmulators());
-	} else if (strcmp(key, "gameart") == 0) {
-		sprintf(value, "%i", CFG_getShowGameArt());
 	} else if (strcmp(key, "showfoldernamesatroot") == 0) {
 		sprintf(value, "%i", CFG_getShowFolderNamesAtRoot());
 	} else if (strcmp(key, "screentimeout") == 0) {
@@ -1134,8 +1312,6 @@ void CFG_get(const char* key, char* value) {
 		sprintf(value, "%i", CFG_getGameSwitcherScaling());
 	} else if (strcmp(key, "switcherresumableonly") == 0) {
 		sprintf(value, "%i", CFG_getGameSwitcherResumableOnly());
-	} else if (strcmp(key, "romfolderbg") == 0) {
-		sprintf(value, "%i", CFG_getRomsUseFolderBackground());
 	} else if (strcmp(key, "saveFormat") == 0) {
 		sprintf(value, "%i", CFG_getSaveFormat());
 	} else if (strcmp(key, "stateFormat") == 0) {
@@ -1144,12 +1320,16 @@ void CFG_get(const char* key, char* value) {
 		sprintf(value, "%i", CFG_getUseExtractedFileName());
 	} else if (strcmp(key, "fnLeds") == 0 || strcmp(key, "muteLeds") == 0) {
 		sprintf(value, "%i", CFG_getFnLEDs());
-	} else if (strcmp(key, "artWidth") == 0) {
-		sprintf(value, "%i", (int)(CFG_getGameArtWidth() * 100));
-	} else if (strcmp(key, "artStyle") == 0) {
-		sprintf(value, "%i", CFG_getGameArtStyle());
-	} else if (strcmp(key, "artType") == 0) {
-		sprintf(value, "%i", CFG_getGameArtType());
+	} else if (strcmp(key, "gameListStyle") == 0) {
+		sprintf(value, "%i", CFG_getGameListStyle());
+	} else if (strcmp(key, "gameListOrient") == 0) {
+		sprintf(value, "%i", CFG_getGameListOrient());
+	} else if (strcmp(key, "gameListVerticalAlign") == 0) {
+		sprintf(value, "%i", CFG_getGameListVAlign());
+	} else if (strcmp(key, "homeStyle") == 0) {
+		sprintf(value, "%i", CFG_getHomeStyle());
+	} else if (strcmp(key, "extraInfo") == 0) {
+		sprintf(value, "%i", CFG_getExtraInfo());
 	} else if (strcmp(key, "wifi") == 0) {
 		sprintf(value, "%i", (int)(CFG_getWifi()));
 	} else if (strcmp(key, "defaultView") == 0) {
@@ -1180,8 +1360,6 @@ void CFG_get(const char* key, char* value) {
 		sprintf(value, "%i", CFG_getButtonLayout());
 	} else if (strcmp(key, "hintlabels") == 0) {
 		sprintf(value, "%i", (int)(CFG_getHintLabels()));
-	} else if (strcmp(key, "uiscale") == 0) {
-		sprintf(value, "%i", CFG_getUIScale());
 	}
 
 	// meta, not a real setting
@@ -1213,18 +1391,24 @@ static int CFG_serialize(char* buf, size_t cap) {
 	EMIT("color5=0x%08X\n", settings.color5_255);
 	EMIT("color6=0x%08X\n", settings.color6_255);
 	EMIT("color7=0x%08X\n", settings.color7_255);
-	EMIT("radius=%i\n", settings.thumbRadius);
 	EMIT("showclock=%i\n", settings.showClock);
 	EMIT("clock24h=%i\n", settings.clock24h);
 	EMIT("batteryperc=%i\n", settings.showBatteryPercent);
 	EMIT("searchhint=%i\n", settings.showSearchHint);
+	EMIT("recenthint=%i\n", settings.showRecentHint);
+	EMIT("netplayhint=%i\n", settings.showNetplayHint);
 	EMIT("menuanim=%i\n", settings.showMenuAnimations);
 	EMIT("menutransitions=%i\n", settings.showMenuTransitions);
 	EMIT("recents=%i\n", settings.showRecents);
 	EMIT("tools=%i\n", settings.showTools);
+	EMIT("showhome=%i\n", settings.showHome);
+	EMIT("menucontrollerart=%i\n", settings.consoleArt);
+	EMIT("gamelistart=%i\n", settings.gameListArt);
+	EMIT("backdropart=%i\n", settings.backdropArt);
+	EMIT("buttonhints=%i\n", settings.buttonHints);
+	EMIT("pagetitle=%i\n", settings.pageTitle);
 	EMIT("collections=%i\n", settings.showCollections);
 	EMIT("emulators=%i\n", settings.showEmulators);
-	EMIT("gameart=%i\n", settings.showGameArt);
 	EMIT("showfoldernamesatroot=%i\n", settings.showFolderNamesAtRoot);
 	EMIT("screentimeout=%i\n", settings.screenTimeoutSecs);
 	EMIT("suspendTimeout=%i\n", settings.suspendTimeoutSecs);
@@ -1234,14 +1418,19 @@ static int CFG_serialize(char* buf, size_t cap) {
 	EMIT("fn1Tool=%s\n", settings.fn1Tool);
 	EMIT("fn2Tool=%s\n", settings.fn2Tool);
 	EMIT("haptics=%i\n", settings.haptics);
-	EMIT("romfolderbg=%i\n", settings.romsUseFolderBackground);
 	EMIT("saveFormat=%i\n", settings.saveFormat);
 	EMIT("stateFormat=%i\n", settings.stateFormat);
 	EMIT("useExtractedFileName=%i\n", settings.useExtractedFileName);
 	EMIT("fnLeds=%i\n", settings.fnLeds);
-	EMIT("artWidth=%i\n", (int)(settings.gameArtWidth * 100));
-	EMIT("artStyle=%i\n", settings.gameArtStyle);
-	EMIT("artType=%i\n", settings.gameArtType);
+	for (int c = 0; c < MENU_CAT_COUNT; c++)
+		EMIT("%s=%i\n", menu_style_keys[c], settings.menuStyle[c]);
+	EMIT("gameListStyle=%i\n", settings.gameListStyle);
+	for (int c = 0; c < MENU_CAT_COUNT; c++)
+		EMIT("%s=%i\n", menu_orient_keys[c], settings.menuOrient[c]);
+	EMIT("gameListOrient=%i\n", settings.gameListOrient);
+	EMIT("gameListVerticalAlign=%i\n", settings.gameListVAlign);
+	EMIT("homeStyle=%i\n", settings.homeStyle);
+	EMIT("extraInfo=%i\n", settings.extraInfo);
 	EMIT("wifi=%i\n", settings.wifi);
 	EMIT("defaultView=%i\n", settings.defaultView);
 	EMIT("wifiDiagnostics=%i\n", settings.wifiDiagnostics);
@@ -1272,7 +1461,6 @@ static int CFG_serialize(char* buf, size_t cap) {
 	EMIT("debugLogging=%i\n", settings.debugLogging);
 	EMIT("buttonlayout=%i\n", settings.buttonLayout);
 	EMIT("hintlabels=%i\n", settings.hintLabels);
-	EMIT("uiscale=%i\n", settings.uiScale);
 #undef EMIT
 	return (int)off;
 }
@@ -1452,17 +1640,23 @@ void CFG_print(void) {
 	printf("\t\"color5\": \"0x%08X\",\n", settings.color5_255);
 	printf("\t\"color6\": \"0x%08X\",\n", settings.color6_255);
 	printf("\t\"color7\": \"0x%08X\",\n", settings.color7_255);
-	printf("\t\"radius\": %i,\n", settings.thumbRadius);
 	printf("\t\"showclock\": %i,\n", settings.showClock);
 	printf("\t\"clock24h\": %i,\n", settings.clock24h);
 	printf("\t\"batteryperc\": %i,\n", settings.showBatteryPercent);
 	printf("\t\"searchhint\": %i,\n", settings.showSearchHint);
+	printf("\t\"recenthint\": %i,\n", settings.showRecentHint);
+	printf("\t\"netplayhint\": %i,\n", settings.showNetplayHint);
 	printf("\t\"menuanim\": %i,\n", settings.showMenuAnimations);
 	printf("\t\"menutransitions\": %i,\n", settings.showMenuTransitions);
 	printf("\t\"recents\": %i,\n", settings.showRecents);
 	printf("\t\"tools\": %i,\n", settings.showTools);
+	printf("\t\"showhome\": %i,\n", settings.showHome);
+	printf("\t\"menucontrollerart\": %i,\n", settings.consoleArt);
+	printf("\t\"gamelistart\": %i,\n", settings.gameListArt);
+	printf("\t\"backdropart\": %i,\n", settings.backdropArt);
+	printf("\t\"buttonhints\": %i,\n", settings.buttonHints);
+	printf("\t\"pagetitle\": %i,\n", settings.pageTitle);
 	printf("\t\"collections\": %i,\n", settings.showCollections);
-	printf("\t\"gameart\": %i,\n", settings.showGameArt);
 	printf("\t\"showfoldernamesatroot\": %i,\n", settings.showFolderNamesAtRoot);
 	printf("\t\"screentimeout\": %i,\n", settings.screenTimeoutSecs);
 	printf("\t\"suspendTimeout\": %i,\n", settings.suspendTimeoutSecs);
@@ -1470,14 +1664,19 @@ void CFG_print(void) {
 	printf("\t\"switcherscale\": %i,\n", settings.gameSwitcherScaling);
 	printf("\t\"switcherresumableonly\": %i,\n", settings.gameSwitcherResumableOnly);
 	printf("\t\"haptics\": %i,\n", settings.haptics);
-	printf("\t\"romfolderbg\": %i,\n", settings.romsUseFolderBackground);
 	printf("\t\"saveFormat\": %i,\n", settings.saveFormat);
 	printf("\t\"stateFormat\": %i,\n", settings.stateFormat);
 	printf("\t\"useExtractedFileName\": %i,\n", settings.useExtractedFileName);
 	printf("\t\"fnLeds\": %i,\n", settings.fnLeds);
-	printf("\t\"artWidth\": %i,\n", (int)(settings.gameArtWidth * 100));
-	printf("\t\"artStyle\": %i,\n", settings.gameArtStyle);
-	printf("\t\"artType\": %i,\n", settings.gameArtType);
+	for (int c = 0; c < MENU_CAT_COUNT; c++)
+		printf("\t\"%s\": %i,\n", menu_style_keys[c], settings.menuStyle[c]);
+	printf("\t\"gameListStyle\": %i,\n", settings.gameListStyle);
+	for (int c = 0; c < MENU_CAT_COUNT; c++)
+		printf("\t\"%s\": %i,\n", menu_orient_keys[c], settings.menuOrient[c]);
+	printf("\t\"gameListOrient\": %i,\n", settings.gameListOrient);
+	printf("\t\"gameListVerticalAlign\": %i,\n", settings.gameListVAlign);
+	printf("\t\"homeStyle\": %i,\n", settings.homeStyle);
+	printf("\t\"extraInfo\": %i,\n", settings.extraInfo);
 	printf("\t\"wifi\": %i,\n", settings.wifi);
 	printf("\t\"defaultView\": %i,\n", settings.defaultView);
 	printf("\t\"wifiDiagnostics\": %i,\n", settings.wifiDiagnostics);
@@ -1493,7 +1692,6 @@ void CFG_print(void) {
 	printf("\t\"debugLogging\": %i,\n", settings.debugLogging);
 	printf("\t\"buttonlayout\": %i,\n", settings.buttonLayout);
 	printf("\t\"hintlabels\": %i,\n", settings.hintLabels);
-	printf("\t\"uiscale\": %i,\n", settings.uiScale);
 
 	// meta, not a real setting
 	printf("\t\"fontpath\": \"%s/font1.ttf\"\n", RES_PATH);

@@ -1,3 +1,4 @@
+# license: modifies Beetle VB (https://github.com/libretro/beetle-vb-libretro), GPL-2.0 (COPYING); this patch is distributed under the same license.
 diff --git forkSrcPrefix/Makefile forkDstPrefix/Makefile
 index c3d5d3b30d71a8f9ed332482fa2af1c21b02605d..5e710154e499ddd7b1ae699122c38753b0f4bb4c 100644
 --- forkSrcPrefix/Makefile

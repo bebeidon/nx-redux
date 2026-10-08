@@ -1,3 +1,4 @@
+# license: modifies blueMSX (https://github.com/libretro/blueMSX-libretro), blueMSX license (license.txt); this patch is distributed under the same license.
 diff --git a/Makefile.libretro b/Makefile.libretro
 index 6f412c7..9a8a14a 100644
 --- a/Makefile.libretro

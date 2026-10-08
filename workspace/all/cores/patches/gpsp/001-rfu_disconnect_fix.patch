@@ -1,3 +1,4 @@
+# license: modifies gpSP (https://github.com/libretro/gpsp), GPL-2.0 (COPYING); this patch is distributed under the same license.
 diff --git a/libretro/libretro.c b/libretro/libretro.c
 index 5f02c09..80969b3 100644
 --- a/libretro/libretro.c

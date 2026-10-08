@@ -406,6 +406,22 @@ void InitSettings(void) {
 
 	SetFanSpeed(settings->fanSpeed);
 }
+// InitSettings without touching the hardware: maps the shared settings as a
+// client and applies nothing (no mixer defaults, no FN-mode re-apply). For a
+// short-lived tool that changes one setting while audio and video are live,
+// e.g. osdctl from the OSD; InitSettings' re-apply briefly runs the codec at
+// full scale (a speaker pop) and resets the backlight (a flash) (issue #164).
+// Falls back to InitSettings when there is no host yet.
+void InitSettingsNoApply(void) {
+	sprintf(SettingsPath, "%s/msettings.bin", getenv("USERDATA_PATH"));
+
+	shm_fd = shm_open(SHM_KEY, O_RDWR, 0644);
+	if (shm_fd == -1) {
+		InitSettings();
+		return;
+	}
+	settings = mmap(NULL, shm_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+}
 int InitializedSettings(void) {
 	return (settings != NULL);
 }
@@ -1262,11 +1278,13 @@ void SetRawVolume(int val) { // in: 0-100
 		// percent mapping parks 50% at ~-38dB — inaudible on the speaker.
 		// Taper: dB = 36.4*log10(val/100) - 4.6, i.e. 50% ≈ -15dB; the top is
 		// held 4.6dB under full scale — the speaker amp audibly distorts when
-		// the DAC runs at 0dB.
+		// the DAC runs at 0dB. Below 40% it bends down a further
+		// 13.8*((40-val)/35)^2 dB so the first step (5%) lands at ~-66dB,
+		// near the old linear mapping's -68dB, instead of a loud -52dB.
 		static const unsigned char DAC_TAPER[101] = {
-			0, 1, 7, 12, 16, 19, 22, 24, 26, 27, 29, 30, 31, 32, 33, 34,
-			35, 36, 37, 37, 38, 39, 39, 40, 41, 41, 42, 42, 43, 43, 44, 44,
-			45, 45, 45, 46, 46, 46, 47, 47, 48, 48, 48, 49, 49, 49, 49, 50,
+			0, 0, 0, 0, 4, 7, 10, 13, 16, 18, 20, 22, 24, 25, 27, 28,
+			29, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 41, 42, 43, 43,
+			44, 44, 45, 45, 46, 46, 47, 47, 48, 48, 48, 49, 49, 49, 49, 50,
 			50, 50, 51, 51, 51, 51, 52, 52, 52, 52, 53, 53, 53, 53, 54, 54,
 			54, 54, 54, 55, 55, 55, 55, 55, 56, 56, 56, 56, 56, 56, 57, 57,
 			57, 57, 57, 57, 58, 58, 58, 58, 58, 58, 59, 59, 59, 59, 59, 59,

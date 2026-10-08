@@ -6,6 +6,12 @@
 #include "config.h"
 #include "ui_draw.h"
 #include "text_shape.h"
+#include "ui_menubar.h"
+#include "ui_buttonhintbar.h"
+#include "../ui_list_layout.h"
+#include "../ui_text_sizes.h"
+#include "ui_font.h"
+#include "ui_accent.h"
 
 // Scroll gap for software scrolling
 #define SCROLL_GAP 30
@@ -213,18 +219,45 @@ void ScrollText_update(ScrollTextState* state, const char* text, TTF_Font* font,
 // List Layout
 // ============================================
 
-ListLayout UI_calcListLayout(SDL_Surface* screen) {
-	int hw = screen->w;
-	int hh = screen->h;
-
+ListLayout UI_calcListLayoutEx(SDL_Surface* screen, int avail_top, int avail_bottom, int row_h, int rows_wanted) {
 	ListLayout layout;
-	layout.list_y = SCALE1(PADDING + PILL_SIZE) + 10;
-	layout.list_h = hh - layout.list_y - SCALE1(PADDING + BUTTON_SIZE + BUTTON_MARGIN);
-	layout.item_h = SCALE1(PILL_SIZE);
-	layout.items_per_page = layout.list_h / layout.item_h;
-	layout.max_width = hw - SCALE1(PADDING * 2);
-
+	layout.avail_top = avail_top >= 0 ? avail_top : UI_pageTitleBandTop();
+	layout.avail_bottom = avail_bottom >= 0 ? avail_bottom : UI_buttonHintIconTop(screen->h);
+	// the pill runs from UI_listPillX() to PADDING short of the right edge (symmetric with the flush-left pill)
+	layout.max_width = screen->w - SCALE1(PADDING) - UI_listPillX();
+	layout.item_h = row_h;
+	layout.titled = true;
+	UI_listLayoutSetRowHeight(&layout, row_h, rows_wanted);
 	return layout;
+}
+
+ListLayout UI_calcListLayout(SDL_Surface* screen) {
+	return UI_calcListLayoutEx(screen, -1, -1, SCALE1(PILL_SIZE), 0);
+}
+
+void UI_listLayoutSetRowHeight(ListLayout* layout, int row_h, int rows_wanted) {
+	UIListBlock b = UI_listBlock(layout->avail_top, layout->avail_bottom, row_h, rows_wanted);
+	layout->item_h = row_h;
+	layout->items_per_page = b.rows;
+	layout->list_y = b.top;
+	layout->list_h = b.rows * row_h;
+	layout->strip = b.strip;
+	layout->up_y = b.up_y;
+	layout->down_y = b.down_y;
+}
+
+int UI_listTextX(void) {
+	return NX_DP(NX_LIST_INSET_DP);
+}
+
+int UI_listPillXFor(int text_x) {
+	// The pill pads its text by SCALE1(BUTTON_PADDING) (14 dp), so its edge sits that far left.
+	int x = text_x - SCALE1(BUTTON_PADDING);
+	return x > 0 ? x : 0;
+}
+
+int UI_listPillX(void) {
+	return UI_listPillXFor(UI_listTextX());
 }
 
 // ============================================
@@ -235,27 +268,112 @@ int UI_calcListPillWidth(TTF_Font* font, const char* text, char* truncated, int 
 	int available_width = max_width - prefix_width;
 	int padding = SCALE1(BUTTON_PADDING * 2);
 
-	int raw_text_w, raw_text_h;
-	GFX_measureText(font, text, &raw_text_w, &raw_text_h);
-
-	if (raw_text_w + padding > available_width) {
-		GFX_truncateText(font, text, truncated, available_width, padding);
+	int raw_text_w = 0;
+	if (GFX_fitTextCached(font, text, truncated, available_width, padding, &raw_text_w))
 		return max_width;
-	}
-
-	strncpy(truncated, text, 255);
-	truncated[255] = '\0';
 	return MIN(max_width, prefix_width + raw_text_w + padding);
+}
+
+// The selection pill's fill: the accent, screen-mapped like the THEME_COLORn it replaces (the GFX_*Color blits decode
+// it with the screen's format).
+static uint32_t accentPill(void) {
+	return UI_accentMapped(GFX_getScreen()->format);
 }
 
 void UI_drawListItemBg(SDL_Surface* dst, SDL_Rect* rect, bool selected) {
 	if (selected) {
-		GFX_blitPillColor(ASSET_WHITE_PILL, dst, rect, THEME_COLOR1, RGB_WHITE);
+		GFX_blitPillColor(ASSET_WHITE_PILL, dst, rect, accentPill(), RGB_WHITE);
 	}
 }
 
+bool UI_listItemBgSprites(const SDL_Rect* rect, const SDL_Rect* clip) {
+	return GFX_pillSprites(ASSET_WHITE_PILL, rect, accentPill(), clip);
+}
+
+// A cached text surface as a sprite at (x, y), cut at max_w px and clipped to clip (NULL: none). False when the text
+// isn't cacheable (the caller draws it the software way).
+static bool textSprite(TTF_Font* font, const char* text, SDL_Color color, int x, int y, int max_w, const SDL_Rect* clip,
+					   int* drawn_w) {
+	SDL_Surface* surf = GFX_getCachedText(font, text, color);
+	SDL_Texture* tex = surf ? PLAT_textureForSurface(surf) : NULL;
+	if (!tex)
+		return false;
+	int w = surf->w > max_w ? max_w : surf->w;
+	if (w > 0)
+		PLAT_spriteAdd(tex, &(SDL_Rect){0, 0, w, surf->h}, &(SDL_Rect){x, y, w, surf->h}, 255, clip);
+	if (drawn_w)
+		*drawn_w = surf->w;
+	return true;
+}
+
+bool UI_listItemTextSprite(const char* text, TTF_Font* font, int text_x, int text_y, int max_text_width,
+						   bool selected) {
+	if (!text || !text[0])
+		return true;
+	SDL_Rect clip = {text_x, text_y, max_text_width, TTF_FontHeight(font)};
+	return textSprite(font, text, UI_getListTextColor(selected), text_x, text_y, max_text_width, &clip, NULL);
+}
+
+bool UI_listItemTextFits(const char* text, TTF_Font* font, int max_text_width, bool selected) {
+	if (!text || !text[0])
+		return true;
+	SDL_Surface* surf = GFX_getCachedText(font, text, UI_getListTextColor(selected));
+	return surf && surf->w <= max_text_width;
+}
+
+bool UI_listItemTextDimSuffixSprite(const char* name, const char* suffix, TTF_Font* font, int text_x, int text_y,
+									int max_text_width, bool selected) {
+	SDL_Rect clip = {text_x, text_y, max_text_width, TTF_FontHeight(font)};
+	int name_w = 0;
+	if (name && name[0] &&
+		!textSprite(font, name, UI_getListTextColor(selected), text_x, text_y, max_text_width, &clip, &name_w))
+		return false;
+	if (suffix && suffix[0] && name_w < max_text_width)
+		return textSprite(font, suffix, COLOR_DARK_TEXT, text_x + name_w, text_y, max_text_width - name_w, &clip,
+						  NULL);
+	return true;
+}
+
+SDL_Texture* UI_listItemMarqueeHoldSprite(const ScrollTextState* state, TTF_Font* font, int text_x, int text_y,
+										  bool selected) {
+	if (!state->text[0] || state->needs_scroll)
+		return NULL;
+	SDL_Color color = UI_getListTextColor(selected);
+	SDL_Surface* surf = GFX_getCachedText(font, state->text, color);
+	if (!surf) {
+		// a title too long for the text cache: one owned render, kept until the title or its colour changes
+		static SDL_Surface* own = NULL;
+		static char own_text[sizeof(state->text)];
+		static SDL_Color own_color;
+		static TTF_Font* own_font = NULL;
+		if (!own || own_font != font || strcmp(own_text, state->text) != 0 || own_color.r != color.r ||
+			own_color.g != color.g || own_color.b != color.b || own_color.a != color.a) {
+			if (own) {
+				PLAT_freeSurfaceTexture(own);
+				SDL_FreeSurface(own);
+			}
+			own = GFX_renderText(font, state->text, color);
+			strcpy(own_text, state->text);
+			own_color = color;
+			own_font = font;
+		}
+		surf = own;
+	}
+	SDL_Texture* tex = surf ? PLAT_textureForSurface(surf) : NULL;
+	if (!tex)
+		return NULL;
+	int max_w = state->max_width;
+	int w = surf->w > max_w ? max_w : surf->w;
+	// as ScrollText_render's hold: an overflowing RTL title shows its right edge (the start of the Arabic)
+	int src_x = (state->rtl && surf->w > max_w) ? surf->w - max_w : 0;
+	if (w > 0)
+		PLAT_spriteAdd(tex, &(SDL_Rect){src_x, 0, w, surf->h}, &(SDL_Rect){text_x, text_y, w, surf->h}, 255,
+					   &(SDL_Rect){text_x, text_y, max_w, TTF_FontHeight(font)});
+	return tex;
+}
+
 SDL_Color UI_getListTextColor(bool selected) {
-	return selected ? uintToColour(THEME_COLOR5_255) : uintToColour(THEME_COLOR4_255);
+	return selected ? UI_onAccent() : uintToColour(THEME_COLOR4_255);
 }
 
 ListItemPos UI_renderListItemPill(SDL_Surface* screen, ListLayout* layout,
@@ -266,10 +384,10 @@ ListItemPos UI_renderListItemPill(SDL_Surface* screen, ListLayout* layout,
 
 	pos.pill_width = UI_calcListPillWidth(font, text, truncated, layout->max_width, prefix_width);
 
-	SDL_Rect pill_rect = {SCALE1(PADDING), y, pos.pill_width, layout->item_h};
+	SDL_Rect pill_rect = {UI_listPillX(), y, pos.pill_width, layout->item_h};
 	UI_drawListItemBg(screen, &pill_rect, selected);
 
-	pos.text_x = SCALE1(PADDING) + SCALE1(BUTTON_PADDING);
+	pos.text_x = UI_listPillX() + SCALE1(BUTTON_PADDING);
 	pos.text_y = y + (layout->item_h - TTF_FontHeight(font)) / 2;
 
 	return pos;
@@ -398,7 +516,9 @@ ListItemBadgedPos UI_renderListItemPillBadged(
 	const char* text, const char* subtitle, char* truncated,
 	int y, bool selected, int badge_width, int extra_subtitle_width) {
 	ListItemBadgedPos pos;
-	int item_h = SCALE1(PILL_SIZE) * 3 / 2;
+	// layout->item_h when the caller laid the rows out taller than a pill (fitted to whole rows,
+	// UI_listFitRowHeight); 1.5 x the pill otherwise
+	int item_h = layout->item_h > SCALE1(PILL_SIZE) ? layout->item_h : SCALE1(PILL_SIZE) * 3 / 2;
 
 	// Badge area: badge content + BUTTON_PADDING on each side
 	int badge_area_w = badge_width > 0 ? badge_width + SCALE1(BUTTON_PADDING * 2) : 0;
@@ -418,7 +538,7 @@ ListItemBadgedPos UI_renderListItemPillBadged(
 	}
 
 	if (selected) {
-		int px = SCALE1(PADDING);
+		int px = UI_listPillX();
 
 		if (badge_area_w > 0) {
 			// Layer 1: THEME_COLOR2 outer capsule covering title + badge area
@@ -426,12 +546,12 @@ ListItemBadgedPos UI_renderListItemPillBadged(
 			UI_fillRoundedRect(screen, px, y, total_w, item_h, item_h / 3, THEME_COLOR2);
 		}
 
-		// Layer 2 (or only layer): THEME_COLOR1 inner capsule for title area
-		UI_fillRoundedRect(screen, px, y, pos.pill_width, item_h, item_h / 3, THEME_COLOR1);
+		// Layer 2 (or only layer): the accent inner capsule for title area
+		UI_fillRoundedRect(screen, px, y, pos.pill_width, item_h, item_h / 3, accentPill());
 	}
 
 	// Text positions: two rows vertically centered
-	int text_start_x = SCALE1(PADDING) + SCALE1(BUTTON_PADDING);
+	int text_start_x = UI_listPillX() + SCALE1(BUTTON_PADDING);
 	int title_h = TTF_FontHeight(title_font);
 	int sub_h = TTF_FontHeight(subtitle_font);
 	int total_text_h = title_h + sub_h;
@@ -444,7 +564,7 @@ ListItemBadgedPos UI_renderListItemPillBadged(
 	pos.subtitle_y = y + top_gap + title_h;
 
 	// Badge position (centered vertically in capsule)
-	pos.badge_x = SCALE1(PADDING) + pos.pill_width + SCALE1(BUTTON_PADDING);
+	pos.badge_x = UI_listPillX() + pos.pill_width + SCALE1(BUTTON_PADDING);
 	pos.badge_y = y + (item_h - TTF_FontHeight(badge_font)) / 2;
 
 	// Account for right-side capsule radius reducing usable text width
@@ -469,20 +589,56 @@ void UI_renderSettingsPageEx(SDL_Surface* screen, ListLayout* layout,
 
 	int hw = screen->w;
 
-	int total_rows = SETTINGS_ROW_COUNT;
-	// Rows held below the list for the selected item's description. A page
-	// with no descriptions passes fewer to fit more items; keep at least one
-	// so the bottom scroll arrow (and the top quarter-row inset) still clear
-	// the last row.
+	// Rows of description under the list (2 by default: up to two lines). A
+	// page with no descriptions passes 1, which reserves none.
 	if (desc_rows < 1)
 		desc_rows = 1;
-	if (desc_rows > total_rows - 1)
-		desc_rows = total_rows - 1;
-	layout->item_h = layout->list_h / total_rows;
-	layout->items_per_page = total_rows - desc_rows;
-	// Quarter-row top inset (was half): the reclaimed space goes to the
-	// description area below the list, which fits two lines instead of one.
-	int y_offset = layout->item_h / 4;
+	if (desc_rows > 3)
+		desc_rows = 3;
+	// Options pages (LIST-LAYOUT §10.2): rows at 0.75 x the pill list pitch.
+	// Titled: a list that fits takes only its rows' height, centred between
+	// the title's letters and the hint icons (no strips); one that scrolls gets
+	// arrow strips of the arrow's height plus 2 dp air each side. Untitled: the
+	// first row stays on the pill list's first row (its top gutter). The
+	// description area sits under the block. A status message takes a row.
+	int row_h = UI_optionsRowHeight(SCALE1(PILL_SIZE));
+	int desc_h = UI_settingsDescHeight(row_h, desc_rows);
+	int strip = UI_optionsArrowStrip(SCALE1(6), NX_DP(2));
+	int untitled_top = layout->titled ? -1 : UI_calcListLayout(screen).list_y;
+	int rows_needed = count + (status_msg && status_msg[0] ? 1 : 0);
+	UIListBlock block = UI_optionsBlock(layout->avail_top, layout->avail_bottom - desc_h, row_h, rows_needed,
+										strip, untitled_top);
+	if (layout->titled && desc_h > 0 && block.rows < rows_needed) {
+		// Rather than scroll a page that only misses the full description area, let the area shrink to the
+		// lines its descriptions really take (minarch's Options: 8 rows and a one-line version note).
+		int lines = 0, desc_max_w = hw - SCALE1(PADDING * 2);
+		for (int i = 0; i < count && lines < 2; i++) {
+			const char* d = items[i].desc;
+			if (!d || !d[0])
+				continue;
+			int w = 0;
+			GFX_measureText(font.tiny, d, &w, NULL);
+			int n = (strchr(d, '\n') || w > desc_max_w) ? 2 : 1;
+			if (n > lines)
+				lines = n;
+		}
+		int bottom = lines ? UI_buttonHintBarTop(screen->h) - lines * TTF_FontHeight(font.tiny)
+						   : layout->avail_bottom;
+		if (bottom > layout->avail_bottom)
+			bottom = layout->avail_bottom;
+		if (bottom > layout->avail_bottom - desc_h) {
+			UIListBlock fit = UI_optionsBlock(layout->avail_top, bottom, row_h, rows_needed, strip, -1);
+			if (fit.rows >= rows_needed)
+				block = fit;
+		}
+	}
+	layout->item_h = row_h;
+	layout->items_per_page = block.rows > 0 ? block.rows : 1;
+	layout->list_y = block.top;
+	layout->list_h = block.rows * row_h;
+	layout->strip = block.strip;
+	layout->up_y = block.up_y;
+	layout->down_y = block.down_y;
 
 	UI_adjustListScroll(selected, scroll, layout->items_per_page);
 
@@ -494,12 +650,14 @@ void UI_renderSettingsPageEx(SDL_Surface* screen, ListLayout* layout,
 	for (int vi = start; vi < end; vi++) {
 		UISettingsItem* item = &items[vi];
 		int sel = (vi == selected);
-		int item_y = layout->list_y + y_offset + (vi - start) * layout->item_h;
+		int item_y = layout->list_y + (vi - start) * layout->item_h;
 
 		// Custom draw override
 		if (item->custom_draw) {
-			item->custom_draw(screen, item->custom_draw_ctx, SCALE1(PADDING), item_y,
-							  hw - SCALE1(PADDING * 2), layout->item_h, sel);
+			// x is the pill edge (the text sits SCALE1(BUTTON_PADDING) in); the row still ends PADDING short of
+			// the right edge
+			item->custom_draw(screen, item->custom_draw_ctx, UI_listPillX(), item_y,
+							  hw - SCALE1(PADDING) - UI_listPillX(), layout->item_h, sel);
 			continue;
 		}
 
@@ -519,11 +677,11 @@ void UI_renderSettingsPageEx(SDL_Surface* screen, ListLayout* layout,
 	}
 
 	// Scroll indicators
-	UI_renderScrollIndicators(screen, *scroll, layout->items_per_page, count);
+	UI_renderScrollIndicatorsAt(screen, layout, *scroll, layout->items_per_page, count);
 
 	// Status message centered below items (e.g. "Scanning for networks...")
 	if (status_msg && status_msg[0] && count < layout->items_per_page) {
-		int msg_row_y = layout->list_y + y_offset + count * layout->item_h;
+		int msg_row_y = layout->list_y + count * layout->item_h;
 		int empty_h = (layout->items_per_page - count) * layout->item_h;
 		int msg_y = msg_row_y + (empty_h - TTF_FontHeight(font.small)) / 2;
 		SDL_Surface* msg_surf = GFX_renderText(font.small, status_msg, COLOR_GRAY);
@@ -537,8 +695,9 @@ void UI_renderSettingsPageEx(SDL_Surface* screen, ListLayout* layout,
 	// Description text below the list — up to two centered lines
 	if (selected >= 0 && selected < count &&
 		items[selected].desc && items[selected].desc[0]) {
-		int area_y = layout->list_y + y_offset + layout->items_per_page * layout->item_h;
-		int area_b = layout->list_y + layout->list_h - SCALE1(8); // keep clear of the bottom scroll arrow
+		// under the block (and its down strip), down to the hint bar's top
+		int area_y = layout->list_y + layout->list_h + layout->strip;
+		int area_b = UI_buttonHintBarTop(screen->h);
 		int desc_max_w = hw - SCALE1(PADDING * 2);
 		int line_h = TTF_FontHeight(font.tiny);
 
@@ -603,7 +762,10 @@ int UI_renderSettingsRow(SDL_Surface* screen, ListLayout* layout,
 	TTF_Font* f = font.small;
 
 	int pill_h = layout->item_h;
-	int text_x = SCALE1(PADDING) + SCALE1(SETTINGS_ROW_PADDING);
+	// The label starts on the list inset (14 dp), the pill edge 14 dp left of it, like every other list row
+	int pill_x = UI_listPillX();
+	int text_x = UI_listTextX();
+	int label_pad = text_x - pill_x;
 	int text_y = y + (pill_h - TTF_FontHeight(f)) / 2;
 
 	// The row blits the label whole and right-aligns the value, so a long
@@ -618,7 +780,12 @@ int UI_renderSettingsRow(SDL_Surface* screen, ListLayout* layout,
 		if (swatch_color >= 0)
 			val_reserve += SCALE1(FONT_TINY) + SCALE1(4);
 	}
-	int label_max_w = hw - SCALE1(PADDING) - SCALE1(SETTINGS_ROW_PADDING) - text_x - val_reserve;
+	// The label pill ends label_pad right of the text: it stays clear of the row's end, or a gap left of the
+	// value (which sits SETTINGS_ROW_PADDING in from the row's end).
+	int label_right = hw - SCALE1(PADDING);
+	if (value)
+		label_right -= SCALE1(SETTINGS_ROW_PADDING) + val_reserve;
+	int label_max_w = label_right - text_x - label_pad;
 	if (label_max_w < 0)
 		label_max_w = 0;
 	char label_buf[512];
@@ -628,19 +795,20 @@ int UI_renderSettingsRow(SDL_Surface* screen, ListLayout* layout,
 	// Measure label (already fitted to label_max_w above)
 	int text_w, text_h;
 	GFX_measureText(f, label, &text_w, &text_h);
-	int label_pill_width = text_w + SCALE1(SETTINGS_ROW_PADDING * 2);
+	int label_pill_width = text_w + label_pad * 2;
 
 	if (selected) {
 		SDL_Color selected_text_color = UI_getListTextColor(1);
 
 		if (value) {
-			// 2-layer: full-width THEME_COLOR2 + label-width THEME_COLOR1
-			int row_width = hw - SCALE1(PADDING * 2);
-			SDL_Rect row_rect = {SCALE1(PADDING), y, row_width, pill_h};
-			GFX_blitRectColor(ASSET_BUTTON, screen, &row_rect, THEME_COLOR2);
+			// 2-layer: full-width THEME_COLOR2 + label-width accent, both true capsules (GFX_blitPillColor: half-circle
+			// ends at the row's height, which the button art's corners only gave at whole scales)
+			int row_width = hw - SCALE1(PADDING) - pill_x;
+			SDL_Rect row_rect = {pill_x, y, row_width, pill_h};
+			GFX_blitPillColor(ASSET_BUTTON, screen, &row_rect, THEME_COLOR2, RGB_WHITE);
 
-			SDL_Rect label_pill_rect = {SCALE1(PADDING), y, label_pill_width, pill_h};
-			GFX_blitRectColor(ASSET_BUTTON, screen, &label_pill_rect, THEME_COLOR1);
+			SDL_Rect label_pill_rect = {pill_x, y, label_pill_width, pill_h};
+			GFX_blitPillColor(ASSET_BUTTON, screen, &label_pill_rect, accentPill(), RGB_WHITE);
 
 			// Label text
 			SDL_Surface* label_surf = GFX_renderText(f, label, selected_text_color);
@@ -676,8 +844,8 @@ int UI_renderSettingsRow(SDL_Surface* screen, ListLayout* layout,
 			return value_x;
 		} else {
 			// Single label rect only
-			SDL_Rect label_pill_rect = {SCALE1(PADDING), y, label_pill_width, pill_h};
-			GFX_blitRectColor(ASSET_BUTTON, screen, &label_pill_rect, THEME_COLOR1);
+			SDL_Rect label_pill_rect = {pill_x, y, label_pill_width, pill_h};
+			GFX_blitPillColor(ASSET_BUTTON, screen, &label_pill_rect, accentPill(), RGB_WHITE);
 
 			SDL_Surface* label_surf = GFX_renderText(f, label, selected_text_color);
 			if (label_surf) {
@@ -785,21 +953,66 @@ void UI_adjustListScroll(int selected, int* scroll, int items_per_page) {
 	}
 }
 
-void UI_renderScrollIndicators(SDL_Surface* screen, int scroll, int items_per_page, int total_count) {
+TTF_Font* UI_mainListFont(void) {
+	int px = (int)TextPx_for(TEXT_MENU_LIST, UIScale_deviceIndex(UI_DEVICE_NAME));
+	TTF_Font* f = px > 0 && px != SCALE1(FONT_LARGE) ? UIFont_getPx(px, false) : NULL;
+	return f ? f : font.large;
+}
+
+int UI_mainListRows(void) {
+	return (int)TextPx_for(MENU_LIST_ROWS, UIScale_deviceIndex(UI_DEVICE_NAME));
+}
+
+// The arrow art is dark grey (0x26, drawn for light grounds): its coverage kept, in white, at UI_SCROLL_ARROW_ALPHA.
+// Baked into the pixels (not an alpha mod), so a blend onto a cleared layer and the layer's own blend can't apply it
+// twice. Built once (the scale is fixed for the process).
+SDL_Surface* UI_scrollArrow(bool up) {
+	static SDL_Surface* arrows[2] = {NULL, NULL};
+	SDL_Surface** a = &arrows[up ? 0 : 1];
+	if (*a)
+		return *a;
+	int asset = up ? ASSET_SCROLL_UP : ASSET_SCROLL_DOWN;
+	SDL_Rect r;
+	GFX_assetRect(asset, &r);
+	if (r.w <= 0 || r.h <= 0)
+		return NULL;
+	SDL_Surface* s = SDL_CreateRGBSurfaceWithFormat(0, r.w, r.h, 32, SDL_PIXELFORMAT_ARGB8888);
+	if (!s)
+		return NULL;
+	SDL_FillRect(s, NULL, SDL_MapRGBA(s->format, 255, 255, 255, 0));
+	GFX_blitAsset(asset, NULL, s, &(SDL_Rect){0, 0});
+	if (SDL_MUSTLOCK(s))
+		SDL_LockSurface(s);
+	for (int y = 0; y < s->h; y++) {
+		Uint32* px = (Uint32*)((Uint8*)s->pixels + y * s->pitch);
+		for (int x = 0; x < s->w; x++)
+			px[x] = (((px[x] >> 24) * UI_SCROLL_ARROW_ALPHA + 127) / 255) << 24 | 0x00FFFFFF;
+	}
+	if (SDL_MUSTLOCK(s))
+		SDL_UnlockSurface(s);
+	SDL_SetSurfaceBlendMode(s, SDL_BLENDMODE_BLEND);
+	*a = s;
+	return s;
+}
+
+void UI_renderScrollArrows(SDL_Surface* screen, int up_y, int down_y, bool show_up, bool show_down) {
+	// the arrow assets are 24 x 6 logical
+	int ox = (screen->w - SCALE1(24)) / 2;
+	int half = SCALE1(6) / 2;
+	SDL_Surface* up = show_up ? UI_scrollArrow(true) : NULL;
+	SDL_Surface* down = show_down ? UI_scrollArrow(false) : NULL;
+	if (up)
+		SDL_BlitSurface(up, NULL, screen, &(SDL_Rect){ox, up_y - half});
+	if (down)
+		SDL_BlitSurface(down, NULL, screen, &(SDL_Rect){ox, down_y - half});
+}
+
+void UI_renderScrollIndicatorsAt(SDL_Surface* screen, const ListLayout* layout, int scroll,
+								 int items_per_page, int total_count) {
 	if (total_count <= items_per_page)
 		return;
-
-	int hw = screen->w;
-	int hh = screen->h;
-	int ox = (hw - SCALE1(24)) / 2;
-
-	if (scroll > 0) {
-		GFX_blitAsset(ASSET_SCROLL_UP, NULL, screen, &(SDL_Rect){ox, SCALE1(PADDING + PILL_SIZE - BUTTON_MARGIN)});
-	}
-	if (scroll + items_per_page < total_count) {
-		int bottom_y = hh - SCALE1(PADDING + BUTTON_SIZE + BUTTON_MARGIN) - SCALE1(8);
-		GFX_blitAsset(ASSET_SCROLL_DOWN, NULL, screen, &(SDL_Rect){ox, bottom_y});
-	}
+	UI_renderScrollArrows(screen, layout->up_y, layout->down_y, scroll > 0,
+						  scroll + items_per_page < total_count);
 }
 
 // ============================================
@@ -916,7 +1129,7 @@ ListGlideFrame UI_listGlideDrawAtY(ListGlide* g, SDL_Surface* screen,
 		SDL_GetClipRect(screen, &prev_clip);
 		SDL_SetClipRect(screen, &(SDL_Rect){0, band_y, screen->w, band_h});
 		UI_drawListItemBg(screen,
-						  &(SDL_Rect){SCALE1(PADDING), f.pill_y,
+						  &(SDL_Rect){UI_listPillX(), f.pill_y,
 									  g->anim.current_w, item_h},
 						  true);
 		SDL_SetClipRect(screen, &prev_clip);
@@ -953,14 +1166,22 @@ ListItemRichPos UI_renderListItemPillRich(SDL_Surface* screen, ListLayout* layou
 										  int extra_subtitle_width) {
 	ListItemRichPos pos;
 
-	int item_h = SCALE1(PILL_SIZE) * 3 / 2;
+	// layout->item_h when the caller laid the rows out taller than a pill (fitted to whole rows,
+	// UI_listFitRowHeight); 1.5 x the pill otherwise
+	int item_h = layout->item_h > SCALE1(PILL_SIZE) ? layout->item_h : SCALE1(PILL_SIZE) * 3 / 2;
 	int img_padding = SCALE1(4);
 
+	// With an image (LIST-LAYOUT §10.2 rich rows): the thumbnail's left edge on the list text start (14 dp, the
+	// title's x) and the capsule 4 dp left of it; without one the pill keeps the list's pill edge.
+	int capsule_x = UI_listPillX();
 	int image_area_w;
 	if (has_image) {
 		pos.image_size = item_h - img_padding * 2;
-		image_area_w = img_padding + pos.image_size + SCALE1(BUTTON_PADDING);
-		pos.image_x = SCALE1(PADDING) + img_padding;
+		pos.image_x = UI_listTextX();
+		capsule_x = pos.image_x - NX_DP(4);
+		if (capsule_x < 0)
+			capsule_x = 0;
+		image_area_w = (pos.image_x - capsule_x) + pos.image_size + SCALE1(BUTTON_PADDING);
 		pos.image_y = y + img_padding;
 	} else {
 		pos.image_size = 0;
@@ -968,22 +1189,24 @@ ListItemRichPos UI_renderListItemPillRich(SDL_Surface* screen, ListLayout* layou
 		pos.image_x = 0;
 		pos.image_y = 0;
 	}
+	// the capsule still ends where the list's pill does
+	int max_w = layout->max_width - (capsule_x - UI_listPillX());
 
-	pos.pill_width = UI_calcListPillWidth(font.medium, title, truncated, layout->max_width, image_area_w);
+	pos.pill_width = UI_calcListPillWidth(font.medium, title, truncated, max_w, image_area_w);
 	if (subtitle && subtitle[0]) {
 		int sub_w;
 		GFX_measureText(font.small, subtitle, &sub_w, NULL);
-		int sub_pill_w = MIN(layout->max_width, image_area_w + sub_w + extra_subtitle_width + SCALE1(BUTTON_PADDING * 2));
+		int sub_pill_w = MIN(max_w, image_area_w + sub_w + extra_subtitle_width + SCALE1(BUTTON_PADDING * 2));
 		if (sub_pill_w > pos.pill_width)
 			pos.pill_width = sub_pill_w;
 	}
 
 	if (selected) {
-		UI_fillRoundedRect(screen, SCALE1(PADDING), y, pos.pill_width, item_h,
-						   item_h / 3, THEME_COLOR1);
+		UI_fillRoundedRect(screen, capsule_x, y, pos.pill_width, item_h,
+						   item_h / 3, accentPill());
 	}
 
-	int text_start_x = SCALE1(PADDING) + image_area_w;
+	int text_start_x = capsule_x + image_area_w;
 	int medium_h = TTF_FontHeight(font.medium);
 	int small_h = TTF_FontHeight(font.small);
 	int total_text_h = medium_h + small_h;
@@ -1001,6 +1224,61 @@ ListItemRichPos UI_renderListItemPillRich(SDL_Surface* screen, ListLayout* layou
 }
 
 // ============================================
+// Rich Row (LIST-LAYOUT §10.2 / §10.6)
+// ============================================
+
+int UI_richRowImageSize(int row_h) {
+	int s = row_h - 2 * NX_DP(4);
+	return s > 0 ? s : 0;
+}
+
+RichRowPos UI_renderRichRow(SDL_Surface* screen, const ListLayout* layout, const char* title,
+							const char* second, int y, bool selected) {
+	RichRowPos pos;
+	int row_h = layout->item_h;
+	int pad = NX_DP(4);
+	UIRichRowText t = UI_richRowText(row_h, SCALE1(FONT_LARGE));
+
+	pos.image_x = UI_listTextX();
+	pos.capsule_x = pos.image_x - pad;
+	if (pos.capsule_x < 0)
+		pos.capsule_x = 0;
+	pos.image_y = y + pad;
+	pos.image_size = UI_richRowImageSize(row_h);
+	pos.text_x = pos.image_x + pos.image_size + NX_DP(NX_RICH_LIST_GAP_DP);
+
+	pos.title_px = t.title_px;
+	pos.second_px = t.second_px;
+	// each font is fetched, measured and dropped before the next UIFont_getPx (a pointer is only valid until then)
+	int content_w = 0;
+	TTF_Font* f = UIFont_getPx(t.title_px, false);
+	pos.title_y = y + t.title_top + (t.title_box - (f ? TTF_FontHeight(f) : t.title_box)) / 2;
+	if (f && title && title[0])
+		GFX_measureText(f, title, &content_w, NULL);
+	f = UIFont_getPx(t.second_px, false);
+	pos.second_y = y + t.second_top + (t.second_box - (f ? TTF_FontHeight(f) : t.second_box)) / 2;
+	if (f && second && second[0]) {
+		int w = 0;
+		GFX_measureText(f, second, &w, NULL);
+		if (w > content_w)
+			content_w = w;
+	}
+
+	// the capsule hugs the longer line, its text ending half a row before the right end
+	int max_w = screen->w - SCALE1(PADDING) - pos.capsule_x;
+	pos.capsule_w = (pos.text_x - pos.capsule_x) + content_w + row_h / 2;
+	if (pos.capsule_w > max_w)
+		pos.capsule_w = max_w;
+	pos.text_max_width = pos.capsule_x + pos.capsule_w - row_h / 2 - pos.text_x;
+	if (pos.text_max_width < 0)
+		pos.text_max_width = 0;
+
+	if (selected)
+		UI_fillRoundedRect(screen, pos.capsule_x, y, pos.capsule_w, row_h, row_h / 2, accentPill());
+	return pos;
+}
+
+// ============================================
 // Menu Item Pill Rendering
 // ============================================
 
@@ -1014,10 +1292,10 @@ MenuItemPos UI_renderMenuItemPill(SDL_Surface* screen, ListLayout* layout,
 
 	pos.pill_width = UI_calcListPillWidth(font.large, text, truncated, layout->max_width - prefix_width, prefix_width);
 
-	SDL_Rect pill_rect = {SCALE1(PADDING), pos.item_y, pos.pill_width, SCALE1(PILL_SIZE)};
+	SDL_Rect pill_rect = {UI_listPillX(), pos.item_y, pos.pill_width, SCALE1(PILL_SIZE)};
 	UI_drawListItemBg(screen, &pill_rect, selected);
 
-	pos.text_x = SCALE1(PADDING) + SCALE1(BUTTON_PADDING);
+	pos.text_x = UI_listPillX() + SCALE1(BUTTON_PADDING);
 	pos.text_y = pos.item_y + (SCALE1(PILL_SIZE) - TTF_FontHeight(font.large)) / 2;
 
 	return pos;

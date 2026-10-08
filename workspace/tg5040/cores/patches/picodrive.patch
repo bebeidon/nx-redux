@@ -1,3 +1,4 @@
+# license: modifies PicoDrive (https://github.com/irixxxx/picodrive), PicoDrive license (COPYING); this patch is distributed under the same license.
 diff --git forkSrcPrefix/Makefile.libretro forkDstPrefix/Makefile.libretro
 index 0d1dc08f81a11cef6b3b7238367b1ff27fcf1ead..1f87c76c3242023c4095f0c9087c52765d93c33c 100644
 --- forkSrcPrefix/Makefile.libretro

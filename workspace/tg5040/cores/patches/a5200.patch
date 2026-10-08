@@ -1,3 +1,4 @@
+# license: modifies a5200 (https://github.com/libretro/a5200), GPL-2.0 (License.txt); this patch is distributed under the same license.
 diff --git a/Makefile b/Makefile
 index 67a7e1f..184ec33 100644
 --- a/Makefile

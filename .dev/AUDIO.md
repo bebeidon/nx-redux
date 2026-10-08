@@ -90,8 +90,9 @@ for fixing audio in any SDL-audio standalone emulator here:
 
 Generous buffering matters because production is bursty: a target of ~256 ms
 operating level took a 4-minute run from 62 underruns + 16 drops to 1/0.
-The same 44.1-vs-48 fix is applied in flycast's `audiobackend_sdl2`
-(flycast.patch).
+The retired standalone flycast carried the same 44.1-vs-48 fix in its
+`audiobackend_sdl2`; Dreamcast now runs as a libretro core through minarch's
+audio path.
 
 ## libmsettings (volume/brightness) divergence
 
@@ -119,7 +120,9 @@ tg5040 (whose `LINEOUT volume` defaults to 26 ≈ −7.5 dB). tg5050's
 **both platforms** maps percent → digital raw through a perceptual-taper
 table (`dB = 36.4·log10(val/100) − 4.6`): 50% ≈ −15 dB instead of −38 dB,
 and the top is held 4.6 dB under full scale because both speaker amps
-audibly distort with the DAC at 0 dB. tg5040's table is mirrored into
+audibly distort with the DAC at 0 dB. Below 40% the taper bends down a further
+13.8·((40−val)/35)² dB (2026-09-29) so step 1 lands at ~−66 dB, near
+upstream's −68 dB; the plain log curve left it at a loud −52 dB. tg5040's table is mirrored into
 attenuation steps for its reversed register. The Brick's analog stage stays
 at its default 26, so it sits ~7.5 dB quieter than the TSPS at the same
 dial position.
@@ -158,10 +161,9 @@ through it, so it is the one place to reason about "why is there no sound".
 Both flags are transient: the settings host resets `fn_mode` and `speaker_mute`
 to 0 at boot, and keymon re-derives `fn_mode` from the GPIO.
 
-Keep the layout in lockstep across **four** files: the two libmsettings copies
-above, `workspace/desktop/libmsettings/msettings.c`, and
-`workspace/all/common/msettings_shm.h`. Struct versions are tg5040
-`SETTINGS_VERSION 12`, tg5050 `3`, desktop `10`; `MSETTINGS_SHM_VERSION`
+Keep the layout in lockstep across **three** files: the two libmsettings copies
+above and `workspace/all/common/msettings_shm.h`. Struct versions are tg5040
+`SETTINGS_VERSION 12`, tg5050 `3`; `MSETTINGS_SHM_VERSION`
 mirrors 12/3 so a stale shm segment from an older binary is rejected. The LED
 config key is `fnLeds`; the loader still accepts the legacy `muteLeds=` on read
 so old `minuisettings.txt` files keep working.

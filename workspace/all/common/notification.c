@@ -15,7 +15,7 @@
 #define NOTIF_STACK_GAP 6 // Gap between stacked notifications
 #define NOTIF_ICON_GAP 4  // Gap between icon and text
 
-// System indicator sizing (must match GFX_blitHardwareIndicator dimensions)
+// System indicator sizing: GFX_hardwareIndicatorSize (INDICATOR_SCALE)
 
 ///////////////////////////////
 // Internal state
@@ -193,7 +193,11 @@ void Notification_push(NotificationType type, const char* message, SDL_Surface* 
 	strncpy(n->message, message, NOTIFICATION_MAX_MESSAGE - 1);
 	n->message[NOTIFICATION_MAX_MESSAGE - 1] = '\0';
 	n->icon = icon;
-	n->start_time = SDL_GetTicks();
+	// the clock starts on the first frame it is actually drawn (see
+	// Notification_update): one pushed while the in-game menu is open, e.g.
+	// a RetroAchievements sync finishing there, must not expire unseen
+	n->start_time = 0;
+	n->shown = false;
 
 	// Use RA-specific duration for achievement notifications
 	if (type == NOTIFICATION_ACHIEVEMENT) {
@@ -233,6 +237,10 @@ void Notification_update(uint32_t now) {
 	// Check each notification for expiration
 	for (int i = 0; i < notification_count; i++) {
 		Notification* n = &notifications[i];
+		if (!n->shown) {
+			n->shown = true;
+			n->start_time = now;
+		}
 		uint32_t elapsed = now - n->start_time;
 
 		if (n->state == NOTIFICATION_STATE_VISIBLE && elapsed >= n->duration_ms) {
@@ -250,8 +258,9 @@ void Notification_update(uint32_t now) {
 
 // Render system indicator (top-right)
 static void render_system_indicator(void) {
-	int indicator_width = SCALE1(HW_INDICATOR_WIDTH);
-	int indicator_height = SCALE1(PILL_SIZE);
+	// the indicator's own size (INDICATOR_SCALE)
+	int indicator_width, indicator_height;
+	GFX_hardwareIndicatorSize(&indicator_width, &indicator_height);
 	int indicator_x = screen_width - SCALE1(PADDING) - indicator_width;
 	int indicator_y = SCALE1(PADDING);
 
@@ -262,7 +271,7 @@ static void render_system_indicator(void) {
 	SDL_Surface* indicator_surface = GFX_createScreenFormatSurface(indicator_width, indicator_height);
 	if (indicator_surface) {
 		SDL_FillRect(indicator_surface, NULL, 0);
-		GFX_blitHardwareIndicator(indicator_surface, 0, 0, (IndicatorType)system_indicator_type);
+		GFX_blitHardwareIndicatorFixed(indicator_surface, 0, 0, (IndicatorType)system_indicator_type);
 
 		// Convert to RGBA for the notification overlay
 		SDL_Surface* converted = SDL_ConvertSurfaceFormat(indicator_surface, SDL_PIXELFORMAT_ABGR8888, 0);

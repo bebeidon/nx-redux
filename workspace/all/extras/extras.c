@@ -2,8 +2,8 @@
  * extras.elf — the Xtras catalog: browse curated games/tools, install
  * on-device. Entries live in ./catalog/<id>/{meta.txt,install.sh,files/}.
  * Games install into "Roms/Xtra Games (EXTRAS)"; tools into Tools/ - except
- * where an entry's install.sh targets somewhere else entirely (psp installs
- * an emulator pak into Emus/), flagged per-entry via meta.txt's done_msg.
+ * where an entry's install.sh targets somewhere else entirely (e.g. an
+ * emulator pak installed into Emus/), flagged per-entry via meta.txt's done_msg.
  */
 
 #include <ctype.h>
@@ -27,6 +27,7 @@
 #include "defines.h"
 #include "api.h"
 #include "wget_fetch.h" // latest-release API queries (settings_updater's helper)
+#include "ui_accent.h"
 #include "ui_buttonhintbar.h"
 #include "ui_confirmdialog.h"
 #include "ui_downloadprogress.h"
@@ -75,11 +76,8 @@
 // is simply installed != latest - the catalog itself no longer pins
 // versions.
 //
-// The state dir is SHARED_USERDATA_PATH "/xtras", but SHARED_USERDATA_PATH
-// is a runtime array (not a string literal) on desktop builds, so it's no
-// longer adjacent-string-literal-concatenable -- resolved via snprintf
-// instead (byte-identical to the device value; same technique as ratools'
-// rat_badge_path()).
+// The state dir is SHARED_USERDATA_PATH "/xtras", resolved via snprintf
+// (same technique as ratools' rat_badge_path()).
 static void xtras_state_dir(char* buf, size_t n) {
 	snprintf(buf, n, "%s/xtras", SHARED_USERDATA_PATH);
 }
@@ -101,7 +99,7 @@ typedef struct {
 	char installed[64]; // "" = not installed, else the installed release tag
 	char done_msg[128]; // optional: install-success subtitle override, for
 						// entries whose payload doesn't land in the default
-						// category folder (e.g. psp installs to Emus/<plat>/, not
+						// category folder (e.g. an emulator pak in Emus/<plat>/, not
 						// Tools/, so "Find it in Tools." would mislead)
 	char platforms[64]; // meta.txt "platforms=" verbatim ("" = compatible everywhere)
 	bool compatible;	// computed in catalog_load via xtras_platform_compatible
@@ -111,18 +109,6 @@ static AddonEntry entries[MAX_ENTRIES];
 static int entry_count = 0;
 static SDL_Surface* screen = NULL;
 static char pak_dir[MAX_PATH];
-
-// The desktop-OS token this build advertises to the compatibility gate.
-// PLATFORM is one "desktop" for both macOS and Linux, but extras.c is
-// compiled once per desktop OS, so __APPLE__ is a compile-time fact. Returns
-// "" on device builds (they match only their PLATFORM: tg5040 / tg5050).
-static const char* build_os_token(void) {
-#ifdef __APPLE__
-	return strcmp(PLATFORM, "desktop") == 0 ? "macos" : "";
-#else
-	return strcmp(PLATFORM, "desktop") == 0 ? "linux" : "";
-#endif
-}
 
 // --- meta.txt: flat key=value, unknown keys ignored ---------------------
 static void meta_set(AddonEntry* e, const char* key, const char* val) {
@@ -348,7 +334,7 @@ static void catalog_load(void) {
 		snprintf(e->id, sizeof(e->id), "%s", de->d_name);
 		if (!meta_parse(meta, e))
 			continue;
-		e->compatible = xtras_platform_compatible(e->platforms, PLATFORM, build_os_token());
+		e->compatible = xtras_platform_compatible(e->platforms, PLATFORM);
 		// Resolve version_source default: explicit internal wins; else an entry
 		// with a repo is external; else (no repo) internal.
 		if (!e->version_internal && e->repo[0] == '\0')
@@ -417,9 +403,10 @@ static void build_tab_rows(AddonTab tab, TabRows* rows) {
 // and switched via L1/R1 in run_list() below. One rounded THEME_COLOR2
 // "container" strip holds both segments, left-aligned and only as wide as
 // the segments themselves (not full screen width); the active segment is a
-// smaller THEME_COLOR1 pill inset within the strip, same "bright selection"
-// family + text color (UI_getListTextColor) an entry row's own selected
-// pill uses; the inactive segment is plain text in the dim gray the shared
+// smaller pill in the accent token (UI_accentMapped: Color 1 unless an
+// accent override is set) inset within the strip, with the accent's ink as
+// its text color (UI_getListTextColor), same as an entry row's own selected
+// pill; the inactive segment is plain text in the dim gray the shared
 // ListView's section-header rows use for "Installed", sitting directly on
 // the strip with no background of its own.
 //
@@ -433,11 +420,14 @@ static void build_tab_rows(AddonTab tab, TabRows* rows) {
 //
 // Local to extras.c - promote to common/ui if a second pak ever needs a
 // segmented control. The reserved vertical band (and so the returned y) is
-// deliberately kept at the ORIGINAL item_h-based height even though the
-// strip itself only draws at ~0.75x that - same contract as the pre-13c
-// pill-button version, so nothing below this call has to move.
+// the strip's own height (it once reserved a whole row height above the
+// list's top, which read as a gap under the title).
 static int render_tab_bar(SDL_Surface* screen, ListLayout* layout, AddonTab active_tab) {
-	int y = layout->list_y;
+	// just under the page title (6 dp below its text), not at the list's own top, which left a wide gap at any UI
+	// scale; the list's rows then start right under it (list_anchor_top)
+	int y = UI_pageTitleBandTop() + NX_DP(6);
+	if (y > layout->list_y)
+		y = layout->list_y;
 	int strip_h = (layout->item_h * 3) / 4;
 	int inset = SCALE1(3);
 	int x = SCALE1(PADDING);
@@ -465,7 +455,7 @@ static int render_tab_bar(SDL_Surface* screen, ListLayout* layout, AddonTab acti
 		if (selected) {
 			UI_renderRoundedRectBg(screen, cx + inset, y + inset,
 								   cell_w[t] - inset * 2, strip_h - inset * 2,
-								   THEME_COLOR1);
+								   UI_accentMapped(screen->format));
 		}
 
 		// Active label: same bright "selected" text color an entry row's own
@@ -485,7 +475,7 @@ static int render_tab_bar(SDL_Surface* screen, ListLayout* layout, AddonTab acti
 		cx += cell_w[t];
 	}
 
-	return y + layout->item_h + SCALE1(PADDING);
+	return y + strip_h;
 }
 
 // Shared-ListView row model (Task 17): the widget's rows are the TabRows
@@ -591,6 +581,7 @@ static void render_extras_list(SDL_Surface* screen, AddonTab active_tab, const T
 	extras_view.list_id = TAB_LABEL[active_tab];
 	extras_view.empty_title = "Nothing here yet";
 	extras_view.list_y_override = render_tab_bar(screen, &layout, active_tab);
+	extras_view.list_anchor_top = true; // the rows right under the tabs (their arrow strip between)
 	// L1/R1 leads the bar (user preference 2026-08-08), then B, then A.
 	// Always shown, even on an empty tab (v1 ships with TOOLS empty) -
 	// otherwise the tab switcher's only remaining discoverability hint (see
@@ -848,7 +839,7 @@ static void draw_result_dialog(const char* title, const char* subtitle, const ch
 	}
 
 	int title_h = TTF_FontHeight(font.large);
-	int btn_sz = SCALE1(BUTTON_SIZE);
+	int btn_sz = SCALE1(BUTTON_SIZE); // the centred button row (UI_renderCenteredButtons)
 
 	int total_h = title_h;
 	if (sub_line_count)
@@ -899,7 +890,7 @@ static void draw_result_dialog(const char* title, const char* subtitle, const ch
 static void draw_progress_screen(const char* menu_title, const char* status,
 								 const char* detail, int progress) {
 	GFX_clear(screen);
-	UI_renderMenuBar(screen, menu_title);
+	UI_renderMenuBarPage(screen, "Xtras", menu_title); // "Xtras | <entry>" (LIST-LAYOUT §10.1)
 	UI_renderDownloadProgress(screen, &(UIDownloadProgress){
 										  .status = status,
 										  .detail = detail,
@@ -983,10 +974,7 @@ static bool parse_hint(const char* line, int* pct, const char** status_text,
 // this only bites install.sh.
 static int run_entry_script(AddonEntry* e, const char* script_name, const char* title) {
 	const char* logs_path = getenv("LOGS_PATH");
-	// USERDATA_PATH is a runtime array (not a string literal) on desktop
-	// builds, so appending "/logs" via adjacent string-literal concatenation
-	// no longer compiles -- resolved into a local buffer via snprintf
-	// instead (byte-identical to the device value).
+	// "<USERDATA_PATH>/logs", resolved into a local buffer via snprintf.
 	char logs_path_buf[MAX_PATH];
 	if (!logs_path) {
 		snprintf(logs_path_buf, sizeof(logs_path_buf), "%s/logs", USERDATA_PATH);
@@ -1006,8 +994,8 @@ static int run_entry_script(AddonEntry* e, const char* script_name, const char* 
 	// (e.g. gen1recomp's LOVE engine + saves live in .data/<id>/). Named .data,
 	// not .ports: native entries own their whole runtime and don't touch
 	// PortMaster. A PortMaster-dependent extra is expected to install into the
-	// normal Roms/Ports (PORTS) tree from its own install.sh (as the psp TOOL
-	// installs to Emus/), so "Xtra Games (EXTRAS)" stays native-only.
+	// normal Roms/Ports (PORTS) tree from its own install.sh (as a TOOL entry
+	// may install outside Tools/), so "Xtra Games (EXTRAS)" stays native-only.
 	char cmd[MAX_PATH * 4];
 	snprintf(cmd, sizeof(cmd),
 			 "PLATFORM='%s' SDCARD_PATH='%s' LOGS_PATH='%s' "
@@ -1401,10 +1389,10 @@ static int run_detail(AddonEntry* e) {
 		}
 		// X/UNINSTALL is guarded on installed[0] only (not compatible): in
 		// SP1 no incompatible entry can ever reach the installed state, so
-		// this branch is unreachable for them. SP2 (desktop-installable
-		// entries) must decide what happens to an entry whose tag flips to
-		// incompatible while installed — keep uninstall available, or block
-		// it to match the hidden hint — before this assumption is relied on.
+		// this branch is unreachable for them. Anything that lets an entry's
+		// tag flip to incompatible while installed must decide whether to keep
+		// uninstall available, or block it to match the hidden hint, before
+		// this assumption is relied on.
 		if (PAD_justPressed(BTN_X) && e->installed[0]) {
 			if (run_confirm_dialog("Uninstall?",
 								   "Saves and ROMs are kept - reinstall to play again.")) {
@@ -1428,9 +1416,9 @@ static int run_detail(AddonEntry* e) {
 			// Same menu bar as the list screen (status icons/battery/clock
 			// live there); layout.list_y below already reserves its band, the
 			// bar just wasn't drawn here (user-reported 2026-08-09).
-			UI_renderMenuBar(screen, "Xtras");
+			UI_renderMenuBarPage(screen, "Xtras", e->name); // a page inside the tool names it (LIST-LAYOUT §10.1)
 			ListLayout layout = UI_calcListLayout(screen);
-			int x = SCALE1(PADDING);
+			int x = UI_listTextX(); // under the title's first letter
 			int y = layout.list_y;
 
 			// Title: the same font a selectable list row uses, so the
@@ -1531,7 +1519,6 @@ static int run_detail(AddonEntry* e) {
 }
 
 int main(int argc, char* argv[]) {
-	PATHS_init(PLATFORM); // no-op on device; resolves SDCARD_PATH et al on desktop
 	(void)argc;
 	char* slash = strrchr(argv[0], '/');
 	if (slash) {

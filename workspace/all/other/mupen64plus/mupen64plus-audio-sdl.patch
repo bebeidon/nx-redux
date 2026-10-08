@@ -1,3 +1,4 @@
+# license: modifies mupen64plus-audio-sdl (https://github.com/mupen64plus/mupen64plus-audio-sdl), GPL-2.0 (LICENSES); this patch is distributed under the same license.
 diff --git a/src/main.c b/src/main.c
 index 4d472d7..4fcca05 100644
 --- a/src/main.c

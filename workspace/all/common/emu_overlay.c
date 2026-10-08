@@ -1,5 +1,6 @@
 #include "emu_overlay.h"
 #include "ui_scale.h"
+#include "ui_title_fit.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,8 +14,8 @@
 #define BUTTON_PADDING 10
 #define SETTINGS_ROW_PAD 8
 
-static int ovl_scale = 2;
-#define S(x) ((x) * ovl_scale)
+static float ovl_scale = 2.25f;
+#define S(x) UIScale_px((x), ovl_scale)
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -115,9 +116,9 @@ int emu_ovl_init(EmuOvl* ovl, EmuOvlConfig* cfg, EmuOvlRenderBackend* render,
 	if (game_name)
 		snprintf(ovl->game_name, sizeof(ovl->game_name), "%s", game_name);
 
-	// Same scale as the rest of NX Redux (Settings → Appearance → UI scale).
+	// The device's UI scale, as the rest of NX Redux (ui_scale.h).
 	ovl_scale = UIScale_fromEnvironment();
-	ovl->items_per_page = UIScale_layout(screen_h, ovl_scale).overlay_items;
+	ovl->items_per_page = UIScale_overlayItems(screen_h, ovl_scale);
 
 	build_main_menu(ovl);
 
@@ -282,6 +283,10 @@ static int calc_centered_list_y(EmuOvl* ovl, int item_count) {
 	return top + (bottom - top - total_h) / 2;
 }
 
+static int measure_title(const char* text, void* ctx) {
+	return ((EmuOvlRenderBackend*)ctx)->text_width(text, EMU_OVL_FONT_TITLE);
+}
+
 // Draw a menu bar (semi-transparent black bar with title text)
 static void draw_menu_bar(EmuOvl* ovl, const char* title) {
 	EmuOvlRenderBackend* r = ovl->render;
@@ -290,10 +295,31 @@ static void draw_menu_bar(EmuOvl* ovl, const char* title) {
 	// Semi-transparent black bar
 	r->draw_rect(0, 0, ovl->screen_w, bar_h, EMU_OVL_COLOR_BAR_BG);
 
-	// Title text (left-aligned, matching content padding)
-	int text_y = (bar_h - r->text_height(EMU_OVL_FONT_SMALL)) / 2;
-	r->draw_text(title, S(PADDING), text_y,
-				 EMU_OVL_COLOR_GRAY, EMU_OVL_FONT_SMALL);
+	// Page title (LIST-LAYOUT §10.1, as ui_menubar.c's UI_renderPageTitle): bold, grey, left-aligned with the
+	// content; at most 80% of the screen, the part through the first " | " never truncates.
+	if (!title || !title[0])
+		return;
+	// "..." rather than "…": the GLideN64 GL backend's bitmap font is ASCII-only. The fit is cached: the
+	// menu redraws every frame.
+	// keyed on the whole title (length + hash), not just the 255 bytes kept in last_title
+	static char last_title[256], fitted[256];
+	static UI_TitleKey last_key;
+	static int last_max_w = -1;
+	static float last_scale = -1;
+	static EmuOvlRenderBackend* last_r = NULL;
+	int max_w = ovl->screen_w * 8 / 10;
+	UI_TitleKey key = UI_titleFit_key(title);
+	if (r != last_r || max_w != last_max_w || ovl_scale != last_scale ||
+		strncmp(title, last_title, sizeof(last_title)) != 0 || !UI_titleFit_keyEq(key, last_key)) {
+		UI_titleFitEx(title, NULL, max_w, measure_title, r, "...", fitted, sizeof(fitted));
+		snprintf(last_title, sizeof(last_title), "%s", title);
+		last_key = key;
+		last_r = r;
+		last_max_w = max_w;
+		last_scale = ovl_scale;
+	}
+	int text_y = (bar_h - r->text_height(EMU_OVL_FONT_TITLE)) / 2;
+	r->draw_text(fitted, S(PADDING), text_y, EMU_OVL_COLOR_GRAY, EMU_OVL_FONT_TITLE);
 }
 
 // Map a button name to its icon handle, or -1 if no icon loaded

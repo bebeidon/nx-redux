@@ -18,8 +18,7 @@ typedef enum {
 	PLAT_UNKNOWN = 0,
 	PLAT_TG5040,
 	PLAT_TG5050,
-	PLAT_MY355,
-	PLAT_DESKTOP
+	PLAT_MY355
 } DevicePlatform;
 
 // ============================================
@@ -52,6 +51,7 @@ typedef struct SettingItem {
 	int (*get_value)(void);		// returns current value
 	void (*set_value)(int val); // sets value
 	int* values;				// maps idx -> actual value (NULL means idx=value)
+	int a_cycles;				// 1 = A also steps to the next value (a two-value flip row)
 
 	// ITEM_BUTTON
 	void (*on_press)(void);
@@ -102,7 +102,6 @@ typedef struct SettingsPage {
 	int input_blocked;		// flag: block value cycling (e.g. async toggle in progress)
 	const char* status_msg; // transient message rendered below items (e.g. "Scanning...")
 	SDL_Surface* screen;	// screen surface for overlay rendering (set by main app)
-	unsigned layout_gen;	// settings_menu layout generation this page's scroll was computed at
 } SettingsPage;
 
 // ============================================
@@ -121,9 +120,6 @@ void settings_menu_handle_input(bool* quit, bool* dirty);
 // keep the screen dirty until it settles.
 bool settings_menu_glide_active(void);
 
-// Drop the category list's pixel state (glide, marquee) after a live UI-scale
-// change so the next render lays out fresh at the new scale.
-void settings_menu_invalidate_layout(void);
 
 // Render the current page
 void settings_menu_render(SDL_Surface* screen, IndicatorType show_setting);

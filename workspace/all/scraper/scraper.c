@@ -13,6 +13,7 @@
 #include "api.h"
 #include "ui_buttonhintbar.h"
 #include "ui_confirmdialog.h"
+#include "ui_downloadprogress.h"
 #include "ui_emptystate.h"
 #include "ui_loadingoverlay.h"
 #include "ui_menubar.h"
@@ -29,6 +30,8 @@
 #include "ui_keyboard.h"
 #include "display_helper.h"
 #include "scraper_scan.h"
+#include "scraper_optimize.h"
+#include "scraper_prefs.h"
 
 // ============================================
 // Constants
@@ -85,10 +88,11 @@ typedef struct {
 	char filename[256];	 // ROM filename (basename; folder games: the .cue/.m3u)
 	char path[512];		 // Full path to ROM file
 	char label[256];	 // Display name, relative to the system folder
-	char art_png[512];	 // Mix image path (nextui ROM_mediaArtPath convention)
-	bool has_artwork;	 // Whether the mix image (art_png) exists
+	char art_png[512];	 // .media/<name>.png (nextui ROM_mediaArtPath): the base the variant paths derive from
+	bool has_artwork;	 // scraped per ScraperPrefs_isComplete: a screenshot or box art, plus the mix when it is on
 	bool has_screenshot; // Whether the .media/screenshot/ variant exists
 	bool has_boxart;	 // Whether the .media/boxart/ variant exists
+	bool has_mix;		 // Whether the .media/mix/ mix exists
 } ROMEntry;
 
 typedef enum {
@@ -103,6 +107,7 @@ typedef enum {
 	SCRAPE_STATUS_IDLE,
 	SCRAPE_STATUS_SEARCHING,
 	SCRAPE_STATUS_DOWNLOADING,
+	SCRAPE_STATUS_SAVING,
 	SCRAPE_STATUS_COMPOSITING,
 	SCRAPE_STATUS_DONE,
 	SCRAPE_STATUS_NOT_FOUND,
@@ -160,6 +165,10 @@ static int settings_scroll = 0;
 static ScraperUserInfo cached_user_info = {0};
 static bool user_info_fetched = false;
 
+// Download preferences (Settings rows); also decide when a game counts as scraped.
+static ScraperPrefs scraper_prefs;
+static bool settings_mix_on_entry = false; // Generate mix when Settings opened
+
 // ============================================
 // System Scanner
 // ============================================
@@ -209,13 +218,20 @@ typedef struct {
 static bool count_game_cb(const ScanGame* g, void* ud) {
 	GameCounts* c = ud;
 	c->roms++;
-	if (exists((char*)g->art_png))
+	char variant[512];
+	Scraper_variantPath(g->art_png, "screenshot", variant, sizeof(variant));
+	bool has_screenshot = exists(variant);
+	Scraper_variantPath(g->art_png, "boxart", variant, sizeof(variant));
+	bool has_boxart = exists(variant);
+	Scraper_variantPath(g->art_png, "mix", variant, sizeof(variant));
+	bool has_mix = exists(variant);
+	if (ScraperPrefs_isComplete(&scraper_prefs, has_screenshot, has_boxart, has_mix))
 		c->scraped++;
 	return true;
 }
 
 // Count games the way nextui lists them (any non-hidden file, folder games
-// as one, nested folders included) and how many already have a mix image.
+// as one, nested folders included) and how many are already scraped (ScraperPrefs_isComplete).
 static GameCounts countGames(const char* dirpath) {
 	GameCounts c = {0, 0};
 	Scan_walk(dirpath, count_game_cb, &c);
@@ -401,16 +417,18 @@ static bool scan_rom_cb(const ScanGame* g, void* ud) {
 	const char* alias = mapAliasFor(map_dir, map_key);
 	snprintf(rom->label, sizeof(rom->label), "%s", (alias && alias[0]) ? alias : g->label);
 	snprintf(rom->art_png, sizeof(rom->art_png), "%s", g->art_png);
-	rom->has_artwork = exists(rom->art_png);
-	// The scraper stores three images per game (mix + screenshot + boxart);
-	// the single-image variants live under .media/<variant>/ and are only
-	// written when ScreenScraper actually had that image, so a game with a
-	// mix can still be missing one of them.
+	// The scraper stores a screenshot and a box art per game, under .media/<variant>/, each only when
+	// ScreenScraper had it. A game with either counts as scraped, and with Generate mix on it also needs the
+	// .media/mix/ mix (an old root .media/<name>.png mix doesn't count, so a re-scrape upgrades it); a mix alone
+	// doesn't count (a re-scrape adds the images the menus use).
 	char variant[512];
 	Scraper_variantPath(rom->art_png, "screenshot", variant, sizeof(variant));
 	rom->has_screenshot = exists(variant);
 	Scraper_variantPath(rom->art_png, "boxart", variant, sizeof(variant));
 	rom->has_boxart = exists(variant);
+	Scraper_variantPath(rom->art_png, "mix", variant, sizeof(variant));
+	rom->has_mix = exists(variant);
+	rom->has_artwork = ScraperPrefs_isComplete(&scraper_prefs, rom->has_screenshot, rom->has_boxart, rom->has_mix);
 	return true;
 }
 
@@ -423,61 +441,13 @@ static void scanROMs(SystemEntry* sys) {
 	qsort(roms, rom_count, sizeof(ROMEntry), romCompare);
 }
 
-// Delete every fetched image under <ROMS_PATH>/<any folder>/.media/*.png,
-// across ALL Roms folders (not just systems the scraper recognises, so ports,
-// unknown tags, folder games and orphaned names go too). bg.png / bglist.png
-// are the folder backgrounds nextui draws, never scraper output: kept.
-// Returns the number of files deleted.
-static bool isFolderBackground(const char* name) {
-	return strcmp(name, "bg.png") == 0 || strcmp(name, "bglist.png") == 0;
-}
-
-// Delete every PNG in one .media directory, skipping the folder backgrounds
-// nextui draws (they are never scraper output). Returns the count deleted.
-static int deleteArtworkInDir(const char* media_path, bool keep_backgrounds) {
-	int deleted = 0;
-	DIR* dir = opendir(media_path);
-	if (!dir)
-		return 0;
-	struct dirent* entry;
-	while ((entry = readdir(dir)) != NULL) {
-		if (entry->d_name[0] == '.')
-			continue;
-		if (keep_backgrounds && isFolderBackground(entry->d_name))
-			continue;
-		if (!suffixMatch(".png", entry->d_name))
-			continue;
-		char png_path[600];
-		snprintf(png_path, sizeof(png_path), "%s/%s", media_path, entry->d_name);
-		if (remove(png_path) == 0)
-			deleted++;
-	}
-	closedir(dir);
-	return deleted;
-}
-
+// Reset artwork: delete every image the scraper downloaded, i.e. the screenshot/, boxart/, boxart2d/, wheel/ and
+// mix/ folders under every .media in <ROMS_PATH>, across ALL Roms folders (not just systems the scraper recognises, so
+// ports, unknown tags, folder games and orphaned names go too) and nested game folders (Roms/GB/Hacks/.media). The
+// root .media/*.png pictures are the user's own art (Ports, hand-made pictures) and the folder backgrounds: kept
+// (Scraper_deleteAllArtwork). Returns the number of files deleted.
 static int deleteAllArtwork(void) {
-	static const char* variants[] = {"screenshot", "boxart"};
-	int deleted = 0;
-	DIR* roms = opendir(ROMS_PATH);
-	if (!roms)
-		return 0;
-	struct dirent* sys;
-	while ((sys = readdir(roms)) != NULL) {
-		if (sys->d_name[0] == '.' || sys->d_type != DT_DIR)
-			continue;
-		char media_path[512];
-		snprintf(media_path, sizeof(media_path), "%s/%s/.media", ROMS_PATH, sys->d_name);
-		deleted += deleteArtworkInDir(media_path, true);
-		for (size_t v = 0; v < sizeof(variants) / sizeof(variants[0]); v++) {
-			char variant_path[600];
-			snprintf(variant_path, sizeof(variant_path), "%s/%s", media_path, variants[v]);
-			deleted += deleteArtworkInDir(variant_path, false);
-			rmdir(variant_path); // no-op unless it is now empty
-		}
-	}
-	closedir(roms);
-	return deleted;
+	return Scraper_deleteAllArtwork(ROMS_PATH);
 }
 
 // ============================================
@@ -666,6 +636,8 @@ static void scrape_status_cb(const char* stage, void* userdata) {
 	ScrapeStatus s = SCRAPE_STATUS_SEARCHING;
 	if (strcmp(stage, "downloading") == 0)
 		s = SCRAPE_STATUS_DOWNLOADING;
+	else if (strcmp(stage, "saving") == 0)
+		s = SCRAPE_STATUS_SAVING;
 	else if (strcmp(stage, "compositing") == 0)
 		s = SCRAPE_STATUS_COMPOSITING;
 	pthread_mutex_lock(&queue_mutex);
@@ -725,8 +697,10 @@ static const char* scrapeStatusText(ScrapeStatus status) {
 		return "Searching...";
 	case SCRAPE_STATUS_DOWNLOADING:
 		return "Downloading...";
+	case SCRAPE_STATUS_SAVING:
+		return "Saving...";
 	case SCRAPE_STATUS_COMPOSITING:
-		return "Compositing...";
+		return "Building mix...";
 	case SCRAPE_STATUS_DONE:
 		return "Done";
 	case SCRAPE_STATUS_NOT_FOUND:
@@ -739,12 +713,10 @@ static const char* scrapeStatusText(ScrapeStatus status) {
 
 static const char* romStatusLabel(ROMEntry* rom) {
 	if (rom->has_artwork) {
-		// Complete only when all three stored images are present; otherwise
-		// name which one is missing so it is clear what a re-scrape would add.
+		// Complete only when both stored images are present; otherwise name the missing one, so it is clear
+		// what a re-scrape would add.
 		if (rom->has_screenshot && rom->has_boxart)
 			return "Done";
-		if (!rom->has_screenshot && !rom->has_boxart)
-			return "Mix only";
 		if (!rom->has_screenshot)
 			return "No screenshot";
 		return "No box art";
@@ -761,7 +733,8 @@ static const char* romStatusLabel(ROMEntry* rom) {
 // ============================================
 
 static ListView main_menu_view;
-static const char* main_menu_items[] = {"Library", "Progress", "Settings"};
+static const char* main_menu_items[] = {"Library", "Progress", "Optimize images", "Settings"};
+#define MAIN_MENU_COUNT ((int)(sizeof(main_menu_items) / sizeof(main_menu_items[0])))
 static char progress_badge_buf[32];
 
 static void main_menu_get_row(void* ctx, int i, bool selected,
@@ -785,7 +758,7 @@ static void renderMainMenu(void) {
 	ListView* v = &main_menu_view;
 	v->title = "Artwork Manager";
 	v->font = font.large;
-	v->count = 3;
+	v->count = MAIN_MENU_COUNT;
 	v->get_row = main_menu_get_row;
 	v->ctx = NULL;
 	v->list_id = (const void*)main_menu_items;
@@ -851,7 +824,7 @@ static void renderROMList(void) {
 	GFX_clear(screen);
 
 	SystemEntry* sys = &systems[systems_view.selected];
-	UI_renderMenuBar(screen, sys->name);
+	UI_renderMenuBarPage(screen, "Artwork Manager", sys->name);
 
 	if (rom_count == 0) {
 		UI_renderEmptyState(screen, "No ROMs found", NULL, NULL);
@@ -957,6 +930,9 @@ static void renderProgress(void) {
 // SCREEN_SETTINGS
 // ============================================
 
+// The download preference rows ahead of Reset artwork.
+#define PREF_ROWS 4
+
 static void renderSettings(void) {
 	GFX_clear(screen);
 
@@ -969,9 +945,15 @@ static void renderSettings(void) {
 	const char* user_display = cred_username[0] ? cred_username : "Not set";
 	const char* pass_display = cred_password[0] ? "********" : "Not set";
 
-	// Row 0 (reset) is shared; the account rows below it only appear once
-	// logged in.
-	UISettingsItem reset_item = {.label = "Reset artwork", .value = NULL, .swatch = -1, .cycleable = 0, .desc = "Delete every fetched image (mix, screenshot, box art) from every Roms folder"};
+	// The download preference rows come first, then reset; the account rows
+	// below it only appear once logged in.
+	UISettingsItem pref_items[PREF_ROWS] = {
+		{.label = "3D box art", .value = "Always", .swatch = -1, .cycleable = 0, .desc = "Always downloaded"},
+		{.label = "2D box art", .value = scraper_prefs.box2d ? "On" : "Off", .swatch = -1, .cycleable = 1, .desc = "Also download the flat 2D box art"},
+		{.label = "Wheel", .value = ScraperPrefs_wantWheel(&scraper_prefs) ? "On" : "Off", .swatch = -1, .cycleable = !scraper_prefs.mix, .desc = scraper_prefs.mix ? "Needed by Generate mix" : "Also download the game's logo (wheel)"},
+		{.label = "Generate mix", .value = scraper_prefs.mix ? "On" : "Off", .swatch = -1, .cycleable = 1, .desc = "Build a screenshot + box art + wheel picture on the device for the List layout. Scraping takes longer and uses more storage"},
+	};
+	UISettingsItem reset_item = {.label = "Reset artwork", .value = NULL, .swatch = -1, .cycleable = 0, .desc = "Delete every image the scraper downloaded (your own .media pictures are kept)"};
 	UISettingsItem user_item = {.label = "Username", .value = user_display, .swatch = -1, .cycleable = 0, .desc = "ScreenScraper username"};
 	UISettingsItem pass_item = {.label = "Password", .value = pass_display, .swatch = -1, .cycleable = 0, .desc = "ScreenScraper password"};
 
@@ -984,6 +966,10 @@ static void renderSettings(void) {
 		}
 
 		UISettingsItem items[] = {
+			pref_items[0],
+			pref_items[1],
+			pref_items[2],
+			pref_items[3],
 			reset_item,
 			user_item,
 			pass_item,
@@ -997,6 +983,10 @@ static void renderSettings(void) {
 							  settings_selected, &settings_scroll, NULL);
 	} else {
 		UISettingsItem items[] = {
+			pref_items[0],
+			pref_items[1],
+			pref_items[2],
+			pref_items[3],
 			reset_item,
 			user_item,
 			pass_item,
@@ -1065,8 +1055,9 @@ static void reportQueued(int added) {
 	SDL_Delay(1000);
 }
 
-// Confirm-and-delete all fetched artwork. Refuses while the scrape queue is
-// still working; on confirm, deletes the .media PNGs, drops stale "Done" rows,
+// Confirm-and-delete all downloaded artwork. Refuses while the scrape queue is
+// still working; on confirm, deletes the .media variant folders' PNGs (the root
+// .media pictures are the user's own and stay), drops stale "Done" rows,
 // and refreshes the cached system/ROM counts so the UI reflects the reset.
 static void resetArtworkFlow(void) {
 	if (queueIsBusy()) {
@@ -1078,7 +1069,7 @@ static void resetArtworkFlow(void) {
 	}
 
 	if (!UI_confirmModal(screen, "Reset artwork?",
-						 "Deletes mix, screenshot and box art",
+						 "Deletes downloaded images only",
 						 &app_quit, false, true))
 		return;
 
@@ -1096,6 +1087,167 @@ static void resetArtworkFlow(void) {
 	SDL_Delay(1000);
 }
 
+// ---- Optimize images ------------------------------------------------------
+// Rewrites the downloaded screenshots, box art and 2D box art already on the card as
+// 256-colour PNGs (scraper_optimize.c; the root .media pictures are left alone)
+// on a worker thread, one file at a time, while this loop draws the progress
+// page; B asks the worker to stop after the file in hand (each file is
+// replaced by a tmp + rename, so a stop never leaves one half-written).
+
+typedef struct {
+	OptimizeList list;
+	volatile int index; // file the worker is on
+	volatile bool cancel, done;
+	int optimized, already, no_gain, failed;
+	long long saved;
+} OptimizeJob;
+
+static OptimizeJob optimize_job;
+
+static void* optimize_thread_func(void* arg) {
+	OptimizeJob* job = arg;
+	for (int i = 0; i < job->list.count && !job->cancel; i++) {
+		job->index = i;
+		long long saved = 0;
+		switch (Optimize_file(job->list.paths[i], &saved)) {
+		case OPTIMIZE_DONE:
+			job->optimized++;
+			job->saved += saved;
+			break;
+		case OPTIMIZE_ALREADY:
+			job->already++;
+			break;
+		case OPTIMIZE_NO_GAIN:
+			job->no_gain++;
+			break;
+		case OPTIMIZE_FAILED:
+			job->failed++;
+			break;
+		}
+	}
+	job->done = true;
+	return NULL;
+}
+
+// The system a path belongs to, as the Library names it: the Roms folder name
+// with its tag and sort prefix dropped ("1) Game Boy (GB)" -> "Game Boy").
+static void optimizeSystemName(const char* path, char* out, int out_size) {
+	out[0] = '\0';
+	size_t root_len = strlen(ROMS_PATH);
+	if (strncmp(path, ROMS_PATH "/", root_len + 1) != 0)
+		return;
+	const char* folder = path + root_len + 1;
+	const char* slash = strchr(folder, '/');
+	char dirname[256];
+	snprintf(dirname, sizeof(dirname), "%.*s", slash ? (int)(slash - folder) : (int)strlen(folder), folder);
+	extractDisplayName(dirname, out, out_size);
+}
+
+static void renderOptimizeProgress(void) {
+	OptimizeJob* job = &optimize_job;
+	int total = job->list.count;
+	int i = job->index;
+	char system[256] = "";
+	if (i >= 0 && i < total)
+		optimizeSystemName(job->list.paths[i], system, sizeof(system));
+	char status[300], detail[64];
+	if (job->cancel)
+		snprintf(status, sizeof(status), "Stopping...");
+	else if (system[0])
+		snprintf(status, sizeof(status), "Optimizing %s", system);
+	else
+		snprintf(status, sizeof(status), "Optimizing images");
+	snprintf(detail, sizeof(detail), "%d of %d", i + 1, total);
+
+	GFX_clear(screen);
+	UI_renderMenuBar(screen, "Artwork Manager | Optimize images");
+	UI_renderDownloadProgress(screen, &(UIDownloadProgress){
+										  .status = status,
+										  .detail = detail,
+										  .progress = total > 0 ? i * 100 / total : 0,
+										  .show_bar = true,
+									  });
+	if (!job->cancel)
+		UI_renderButtonHintBar(screen, (char*[]){"B", "CANCEL", NULL});
+	GFX_flip(screen);
+}
+
+// Confirm, then convert every art PNG under Roms. Refuses while the scrape
+// queue is working (the scraper thread writes art into the same folders).
+static void optimizeImagesFlow(void) {
+	if (queueIsBusy()) {
+		UI_renderLoadingOverlay(screen, "Scrape in progress",
+								"Wait for the queue to finish");
+		GFX_flip(screen);
+		SDL_Delay(1500);
+		return;
+	}
+
+	if (!UI_confirmModal(screen, "Optimize images?",
+						 "Shrinks the art files on the card to 256 colours. They look the same "
+						 "on screen and take far less space. This can't be undone.",
+						 &app_quit, false, true))
+		return;
+
+	UI_renderLoadingOverlay(screen, "Optimize images", "Finding art files...");
+	GFX_flip(screen);
+
+	OptimizeJob* job = &optimize_job;
+	memset(job, 0, sizeof(*job));
+	if (!Optimize_collect(ROMS_PATH, &job->list)) {
+		UI_renderLoadingOverlay(screen, "Optimize images", "Out of memory");
+		GFX_flip(screen);
+		SDL_Delay(1500);
+		return;
+	}
+	if (job->list.count == 0) {
+		UI_renderLoadingOverlay(screen, "Nothing to optimize", "No art files found");
+		GFX_flip(screen);
+		SDL_Delay(1500);
+		return;
+	}
+
+	pthread_t thread;
+	if (pthread_create(&thread, NULL, optimize_thread_func, job) != 0) {
+		Optimize_freeList(&job->list);
+		UI_renderLoadingOverlay(screen, "Optimize images", "Could not start");
+		GFX_flip(screen);
+		SDL_Delay(1500);
+		return;
+	}
+
+	// a long job: don't let the device doze off while it runs
+	PWR_disableAutosleep();
+	bool dirty = true;
+	IndicatorType show_setting = INDICATOR_NONE;
+	while (!job->done) {
+		GFX_startFrame();
+		PAD_poll();
+		PWR_update(&dirty, &show_setting, NULL, NULL);
+		if (PAD_justPressed(BTN_B) || app_quit)
+			job->cancel = true;
+		renderOptimizeProgress();
+	}
+	pthread_join(thread, NULL);
+	PWR_enableAutosleep();
+	bool cancelled = job->cancel;
+	Optimize_freeList(&job->list);
+	PAD_poll();
+	PAD_reset();
+	if (app_quit)
+		return;
+
+	char summary[256];
+	int skipped = job->already + job->no_gain;
+	int n = snprintf(summary, sizeof(summary), "Optimized %d %s, saved %.1f MB. Skipped %d (already optimized or no smaller).",
+					 job->optimized, job->optimized == 1 ? "file" : "files",
+					 job->saved / (1024.0 * 1024.0), skipped);
+	if (job->failed > 0 && n > 0 && n < (int)sizeof(summary))
+		snprintf(summary + n, sizeof(summary) - n, " %d could not be read.", job->failed);
+	UI_confirmModalHints(screen, cancelled ? "Optimize stopped" : "Optimize complete", summary,
+						 (char*[]){"A", "OK", NULL}, &app_quit, false, true);
+}
+
 // ============================================
 // Main
 // ============================================
@@ -1104,6 +1256,7 @@ static void resetArtworkFlow(void) {
 // (system, tag, support, art/total) and every game it would queue. Headless,
 // no video; for bug reports and device tests.
 static int run_headless_scan(void) {
+	ScraperPrefs_load(&scraper_prefs);
 	scanSystems();
 	for (int i = 0; i < system_count; i++) {
 		SystemEntry* sys = &systems[i];
@@ -1126,8 +1279,6 @@ static int run_headless_scan(void) {
 }
 
 int main(int argc, char* argv[]) {
-	PATHS_init(PLATFORM);
-
 	for (int i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "--fetch") == 0)
 			return run_headless_fetch(argc, argv);
@@ -1144,13 +1295,14 @@ int main(int argc, char* argv[]) {
 	setup_signal_handlers();
 	ScraperAPI_init();
 	loadCredentials();
+	ScraperPrefs_load(&scraper_prefs);
 
 	mkdir_p(TMP_DIR);
 	scanSystems();
 
 	// Cold-start the main-menu ListView; selection persists across screen
 	// changes thereafter (static view), matching the old module-static index.
-	UI_listViewReset(&main_menu_view, 3, main_menu_items);
+	UI_listViewReset(&main_menu_view, MAIN_MENU_COUNT, main_menu_items);
 
 	bool dirty = true;
 	IndicatorType show_setting = INDICATOR_NONE;
@@ -1190,10 +1342,15 @@ int main(int argc, char* argv[]) {
 					progress_scroll = 0;
 					dirty = true;
 					break;
-				case 2: // Settings
+				case 2: // Optimize images
+					optimizeImagesFlow();
+					dirty = true;
+					break;
+				case 3: // Settings
 					current_screen = SCREEN_SETTINGS;
 					settings_selected = 0;
 					settings_scroll = 0;
+					settings_mix_on_entry = scraper_prefs.mix;
 					// Fetch user info if credentials are set
 					if (ScraperAPI_hasUserCredentials() && !user_info_fetched) {
 						fetchUserInfoIfOnline();
@@ -1317,9 +1474,16 @@ int main(int argc, char* argv[]) {
 		}
 		case SCREEN_SETTINGS: {
 			bool logged_in = cred_username[0] && cred_password[0];
-			int settings_count = logged_in ? 6 : 3;
+			int settings_count = PREF_ROWS + (logged_in ? 6 : 3);
 
 			if (PAD_justPressed(BTN_B)) {
+				// Generate mix changes which games count as scraped:
+				// refresh the counts the same way resetArtworkFlow does.
+				if (scraper_prefs.mix != settings_mix_on_entry) {
+					scanSystems();
+					if (rom_count > 0 && systems_view.selected < system_count)
+						scanROMs(&systems[systems_view.selected]);
+				}
 				current_screen = SCREEN_MAIN_MENU;
 				dirty = true;
 				break;
@@ -1328,32 +1492,51 @@ int main(int argc, char* argv[]) {
 			if (PAD_navigateMenu(&settings_selected, settings_count))
 				dirty = true;
 
+			// Rows 1-3 toggle on left, right or A; Wheel is locked on while
+			// Generate mix needs it.
+			if (settings_selected >= 1 && settings_selected < PREF_ROWS &&
+				(PAD_justPressed(BTN_LEFT) || PAD_justPressed(BTN_RIGHT) ||
+				 PAD_justPressed(BTN_A))) {
+				if (settings_selected == 2 && scraper_prefs.mix)
+					break;
+				if (settings_selected == 1)
+					scraper_prefs.box2d = !scraper_prefs.box2d;
+				else if (settings_selected == 2)
+					scraper_prefs.wheel = !scraper_prefs.wheel;
+				else
+					scraper_prefs.mix = !scraper_prefs.mix;
+				ScraperPrefs_save(&scraper_prefs);
+				dirty = true;
+				break;
+			}
+
 			if (PAD_justPressed(BTN_A)) {
 				switch (settings_selected) {
-				case 0: { // Reset artwork
+				case PREF_ROWS + 0: { // Reset artwork
 					resetArtworkFlow();
 					dirty = true;
 					break;
 				}
-				case 1: { // Username
+				case PREF_ROWS + 1: { // Username
 					editCredentialField("ScreenScraper Username",
 										cred_username, sizeof(cred_username));
 					dirty = true;
 					break;
 				}
-				case 2: { // Password
+				case PREF_ROWS + 2: { // Password
 					editCredentialField("ScreenScraper Password",
 										cred_password, sizeof(cred_password));
 					dirty = true;
 					break;
 				}
-				case 5: { // Logout (only reachable when logged in)
+				case PREF_ROWS + 5: { // Logout (only reachable when logged in)
 					cred_username[0] = '\0';
 					cred_password[0] = '\0';
 					saveCredentials();
 					user_info_fetched = false;
 					cached_user_info = (ScraperUserInfo){0};
-					settings_selected = 0;
+					// land on Reset artwork (the Logout row is gone); the renderer keeps it in view
+					settings_selected = PREF_ROWS;
 					settings_scroll = 0;
 					dirty = true;
 					break;

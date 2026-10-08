@@ -1,3 +1,4 @@
+# license: modifies PUAE (https://github.com/libretro/libretro-uae), GPL-2.0 (COPYING); this patch is distributed under the same license.
 diff --git a/Makefile b/Makefile
 index 7e5ff625..d0e5bdf9 100644
 --- a/Makefile

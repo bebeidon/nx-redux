@@ -3,28 +3,14 @@
 #include "ma_runframe.h"
 #include "ma_input.h"
 #include "ma_rewind.h"
+#include "ma_avinfo.h"
+
+_Static_assert(SYNC_SRC_AUTO == AVSYNC_AUTO && SYNC_SRC_SCREEN == AVSYNC_SCREEN && SYNC_SRC_CORE == AVSYNC_CORE &&
+				   SYNC_SRC_EMULATED == AVSYNC_EMULATED,
+			   "ma_avinfo.h sync values must match SYNC_SRC_*");
 
 void chooseSyncRef(void) {
-#if defined(HAS_RUNTIME_PATHS)
-	// Desktop always paces video to the core's own fps in software (see
-	// screen_flip in ma_video.c): there is no display clock for audio to sync
-	// to, and the measured loop fps is too jittery to drive the dynamic
-	// resample ratio (it warbles pitch ~1% peak-to-peak). Always take the
-	// fixed-rate audio path; its buffer-occupancy modes absorb clock drift.
-	use_core_fps = 1;
-#else
-	switch (sync_ref) {
-	case SYNC_SRC_AUTO:
-		use_core_fps = (core.get_region() == RETRO_REGION_PAL);
-		break;
-	case SYNC_SRC_SCREEN:
-		use_core_fps = 0;
-		break;
-	case SYNC_SRC_CORE:
-		use_core_fps = 1;
-		break;
-	}
-#endif
+	use_core_fps = SyncRef_useCoreFps(sync_ref, core.get_region() == RETRO_REGION_PAL, core.fps, SCREEN_FPS);
 }
 
 static void limitFF(void) {

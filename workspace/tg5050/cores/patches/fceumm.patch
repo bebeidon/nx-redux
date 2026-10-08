@@ -1,3 +1,4 @@
+# license: modifies FCEUmm (https://github.com/libretro/libretro-fceumm), GPL-2.0 (Copying); this patch is distributed under the same license.
 diff --git forkSrcPrefix/Makefile.libretro forkDstPrefix/Makefile.libretro
 index 036c41f48b087c99b2276b2d41a71d661fd85145..891eb96ceeb1da868d6d2ed40392b51b65dcbb20 100644
 --- forkSrcPrefix/Makefile.libretro

@@ -18,28 +18,22 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 PREFIX="${PREFIX:-/opt/homebrew}"
 
-CFLAGS=(-std=gnu99 -O1 -DUSE_SDL2 -DPLATFORM=\"desktop\" -DHAS_RUNTIME_PATHS
+CFLAGS=(-std=gnu99 -O1 -DUSE_SDL2 -DPLATFORM=\"tg5040\" -DHOSTTEST_SDCARD=\"$TMP/sd\"
     -I workspace/all/common -I workspace/all/common/ui
-    -I workspace/desktop/platform -I workspace/desktop/libmsettings
+    -I scripts/tests/hostplat -I workspace/tg5040/platform -I workspace/tg5040/libmsettings
     -I "$PREFIX/include" -I "$PREFIX/include/SDL2")
 
 # ---------------------------------------------------------------------------
-# 1. Config round-trip (no SDL needed)
+# 1. Art paths (no SDL needed)
 # ---------------------------------------------------------------------------
-echo "== config round-trip =="
-for src in config paths utils; do
-    cc "${CFLAGS[@]}" -w -c -o "$TMP/$src.o" "workspace/all/common/$src.c"
-done
-cc "${CFLAGS[@]}" -Wall -Wextra -Werror -c -o "$TMP/cfg_test.o" \
-    scripts/tests/artstyle/art_style_cfg_test.c
-cc -o "$TMP/art_style_cfg_test" "$TMP"/config.o "$TMP"/paths.o "$TMP"/utils.o "$TMP/cfg_test.o"
-mkdir -p "$TMP/userdata"
-"$TMP/art_style_cfg_test" "$TMP/userdata"
+# (the "Game art style" setting is retired: the List always draws the background style, so there is no config
+# round-trip to check any more)
+cc "${CFLAGS[@]}" -w -c -o "$TMP/utils.o" "workspace/all/common/utils.c"
 
 echo "== art path resolution =="
 cc "${CFLAGS[@]}" -Wall -Wextra -Werror -c -o "$TMP/path_test.o" \
     scripts/tests/artstyle/art_path_test.c
-cc -o "$TMP/art_path_test" "$TMP"/utils.o "$TMP"/paths.o "$TMP/path_test.o"
+cc -o "$TMP/art_path_test" "$TMP"/utils.o "$TMP/path_test.o"
 mkdir -p "$TMP/rom"
 "$TMP/art_path_test" "$TMP/rom"
 
@@ -62,15 +56,18 @@ else
 fi
 
 echo "== artbg compositor =="
-# artbg.c is deliberately self-contained (SDL + libm), so it compiles clean
-# with the strict flags and links only against SDL2.
+# artbg.c is deliberately self-contained (SDL + libm + the SDL-free
+# area_scale.c), so it compiles clean with the strict flags and links only
+# against SDL2.
 cc -std=gnu99 -O1 -Wall -Wextra -Werror $SDL_CFLAGS \
     -I workspace/all/nextui \
     -c -o "$TMP/artbg.o" workspace/all/nextui/artbg.c
+cc -std=gnu99 -O1 -Wall -Wextra -Werror \
+    -c -o "$TMP/area_scale.o" workspace/all/nextui/area_scale.c
 cc -std=gnu99 -O1 -Wall -Wextra -Werror $SDL_CFLAGS \
     -I workspace/all/nextui \
     -c -o "$TMP/test_artbg.o" scripts/tests/artstyle/test_artbg.c
-cc -o "$TMP/test_artbg" "$TMP/artbg.o" "$TMP/test_artbg.o" $SDL_LIBS -lm
+cc -o "$TMP/test_artbg" "$TMP/artbg.o" "$TMP/area_scale.o" "$TMP/test_artbg.o" $SDL_LIBS -lm
 "$TMP/test_artbg"
 
 echo "PASS: test-art-style"

@@ -1,0 +1,73 @@
+NextCommander (file manager; fork of DinguxCommander)
+Source: https://github.com/LoveRetro/NextCommander (fork chain: OnionUI/app-DinguxCommander <- gcwnow/DinguxCommander <- original DinguxCommander by Mia, http://beyondds.free.fr/)
+Version: aa542cb714891b81dedb1e683067535d187d1eee (2026-07-17; unpinned `git clone --depth 1` in workspace/<platform>/Makefile, commit of the local checkout), plus NX Redux patch workspace/all/other/NextCommander.patch
+Shipped as: SYSTEM/{tg5040,tg5050}/paks/Tools/Files.pak/NextCommander and Files.pak/res/ (copied by workspace/<platform>/platform/Makefile.copy)
+License: none declared (no license). NextCommander's repository contains no LICENSE/COPYING file and GitHub reports no license; the same is true of its parents OnionUI/app-DinguxCommander and gcwnow/DinguxCommander, and neither README.md nor README.txt nor the source headers state a license (checked 2026-10-07). The original DinguxCommander by Mia was published without a license: the maintainer of the separate rewrite od-contrib/commander (Gleb Mazovetskiy) recorded in commit 6023665431029ea63a7c83fdf215a9d14c2f6c1c (2021-06-28): "I've made multiple failed attempts to contact the author of the original code about the intended license. The original code and icons were published without a license." That rewrite was then relicensed MIT, but NextCommander descends from the gcwnow lineage, not from od-contrib/commander, so the MIT grant does not cover it. The only explicit license in the shipped program is the bundled SDL_gfx rotozoom code (Zlib), reproduced below. Fonts in Files.pak/res/ are covered by source-code-pro.txt.
+
+==== README.txt (Credits section, verbatim) ====
+Credits
+-------
+
+Homepage:      http://beyondds.free.fr/
+Development:   Mia
+Font:          Beycan Çetin
+
+==== src/sdl_gfx/SDL2_rotozoom.c (license header) ====
+/*  
+
+SDL2_rotozoom.c: rotozoomer, zoomer and shrinker for 32bit or 8bit surfaces
+
+Copyright (C) 2012-2014  Andreas Schiffler
+
+This software is provided 'as-is', without any express or implied
+warranty. In no event will the authors be held liable for any damages
+arising from the use of this software.
+
+Permission is granted to anyone to use this software for any purpose,
+including commercial applications, and to alter it and redistribute it
+freely, subject to the following restrictions:
+
+1. The origin of this software must not be misrepresented; you must not
+claim that you wrote the original software. If you use this software
+in a product, an acknowledgment in the product documentation would be
+appreciated but is not required.
+
+2. Altered source versions must be plainly marked as such, and must not be
+misrepresented as being the original software.
+
+3. This notice may not be removed or altered from any source
+distribution.
+
+Andreas Schiffler -- aschiffler at ferzkopp dot net
+
+*/
+
+==== src/sdl_gfx/SDL_rotozoom.c (license header) ====
+/*
+
+SDL_rotozoom.c: rotozoomer, zoomer and shrinker for 32bit or 8bit surfaces
+
+Copyright (C) 2001-2012  Andreas Schiffler
+
+This software is provided 'as-is', without any express or implied
+warranty. In no event will the authors be held liable for any damages
+arising from the use of this software.
+
+Permission is granted to anyone to use this software for any purpose,
+including commercial applications, and to alter it and redistribute it
+freely, subject to the following restrictions:
+
+1. The origin of this software must not be misrepresented; you must not
+claim that you wrote the original software. If you use this software
+in a product, an acknowledgment in the product documentation would be
+appreciated but is not required.
+
+2. Altered source versions must be plainly marked as such, and must not be
+misrepresented as being the original software.
+
+3. This notice may not be removed or altered from any source
+distribution.
+
+Andreas Schiffler -- aschiffler at ferzkopp dot net
+
+*/

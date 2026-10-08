@@ -54,17 +54,45 @@ enum {
 	SCREEN_OFF
 };
 
-// Game art presentation style: a thumbnail floating on the right, or a
-// full-height background image that fades diagonally into the list.
-typedef enum {
-	ART_STYLE_THUMBNAIL = 0,
-	ART_STYLE_BACKGROUND = 1
-} ArtStyle;
+// The List game list's picture (Layouts > List art): the screenshot, 3D box art, or one of the scraper's
+// optional mix composite, 2D box art or wheel (Artwork Manager > Settings); None, a plain list with no picture
+// and no background. Stored as gamelistart=; never renumber (3D box art and None came later, so they are last;
+// the settings row shows 3D box art after Mix).
+enum { GAME_LIST_ART_SCREENSHOT = 0,
+	   GAME_LIST_ART_MIX = 1,
+	   GAME_LIST_ART_BOXART2D = 2,
+	   GAME_LIST_ART_WHEEL = 3,
+	   GAME_LIST_ART_BOXART3D = 4,
+	   GAME_LIST_ART_NONE = 5,
+	   GAME_LIST_ART_COUNT };
 
-// Which stored art variant the game lists display. The scraper writes a mix
-// composite to <console>/.media/<game>.png and, when available, screenshot-
-// and box-art-only variants to .media/screenshot/ and .media/boxart/. Older
-// libraries have only the mix file, which is the fallback for the others.
+// What the List draws behind the Consoles tab (Layouts > Controller): Background = no controller, the user's own
+// .media/bg.png or the global bg.png; Controller = each console's controller (or logo); None = nothing, plain
+// black. Stored as menucontrollerart= (0/1 were the old Hide/Show); never renumber.
+enum { CONSOLE_ART_BACKGROUND = 0,
+	   CONSOLE_ART_CONTROLLER = 1,
+	   CONSOLE_ART_NONE = 2,
+	   CONSOLE_ART_COUNT };
+
+// The Backdrop game list's row item pictures (Layouts > Backdrop art): 3D box art, or the scraper's
+// optional 2D box art or wheel (Artwork Manager > Settings). Stored as backdropart=; never renumber.
+enum { BACKDROP_ART_BOXART3D = 0,
+	   BACKDROP_ART_BOXART2D = 1,
+	   BACKDROP_ART_WHEEL = 2,
+	   BACKDROP_ART_COUNT };
+
+// Main menu tab and game list layout styles (MENU_STYLE_*), their defaults and the stored-value mapping.
+#include "menustyle_model.h"
+// Main menu style categories; MenuTabs_styleCategory (menutabs.h) maps a tab to one (Home has none).
+enum { MENU_CAT_CONSOLES = 0,
+	   MENU_CAT_COLLECTIONS,
+	   MENU_CAT_TOOLS,
+	   MENU_CAT_COUNT };
+
+// Which stored art variant to resolve (ROM_displayArtPath). The scraper writes the screenshot to
+// <console>/.media/screenshot/<game>.png and the box art to .media/boxart/; the root .media/<game>.png
+// is where Ports, hand-made art and older scrapes (an older mix composite included) keep their one
+// picture, which is the fallback for the variants. Generate mix writes .media/mix/ (ROM_findListArt).
 typedef enum {
 	ART_TYPE_MIX = 0,
 	ART_TYPE_SCREENSHOT = 1,
@@ -98,18 +126,20 @@ typedef struct
 {
 	// Theme
 	int font;
-	uint32_t color1_255; // not screen mapped
-	uint32_t color2_255; // not screen mapped
-	uint32_t color3_255; // not screen mapped
-	uint32_t color4_255; // not screen mapped
-	uint32_t color5_255; // not screen mapped
-	uint32_t color6_255; // not screen mapped
-	uint32_t color7_255; // not screen mapped
-	int thumbRadius;
-	int gameSwitcherScaling; // enum
-	double gameArtWidth;	 // [0,1] -> 0-100% of screen width
-	int gameArtStyle;		 // ArtStyle: thumbnail on the right, or faded background
-	int gameArtType;		 // ArtType: which stored art variant (mix/screenshot/boxart) to show
+	uint32_t color1_255;			// not screen mapped
+	uint32_t color2_255;			// not screen mapped
+	uint32_t color3_255;			// not screen mapped
+	uint32_t color4_255;			// not screen mapped
+	uint32_t color5_255;			// not screen mapped
+	uint32_t color6_255;			// not screen mapped
+	uint32_t color7_255;			// not screen mapped
+	int gameSwitcherScaling;		// enum
+	int menuStyle[MENU_CAT_COUNT];	// MENU_STYLE_* per main menu tab (MENU_CAT_*)
+	int gameListStyle;				// MENU_STYLE_* for game lists
+	int menuOrient[MENU_CAT_COUNT]; // MENU_ORIENT_* per main menu tab (MENU_CAT_*), stored whatever the style
+	int gameListOrient;				// MENU_ORIENT_* for game lists, stored whatever the style
+	int gameListVAlign;				// MENU_VALIGN_* for game lists' vertical stacks, stored whatever the style
+	int homeStyle;					// HOME_STYLE_* for the Home tab
 
 	// font loading/unloading callback
 	FontLoad_callback_t onFontChange;
@@ -122,15 +152,22 @@ typedef struct
 	bool clock24h;
 	bool showBatteryPercent;
 	bool showSearchHint;
+	bool showRecentHint;
+	bool showNetplayHint;
 	bool showMenuAnimations;
 	bool showMenuTransitions;
 	bool showRecents;
 	bool showTools;
+	bool showHome;	  // the Home tab (Layouts > Home tab)
+	int consoleArt;	  // CONSOLE_ART_*: what the List draws behind the Consoles tab (Layouts > Controller)
+	int gameListArt;  // GAME_LIST_ART_*: the List game list's picture (Layouts > List art)
+	int backdropArt;  // BACKDROP_ART_*: the Backdrop game list's item pictures (Layouts > Backdrop art)
+	bool buttonHints; // the launcher lists' bottom button hint bar (Layouts > Button hints)
+	bool pageTitle;	  // the main menu's tab row and a game list's title (Layouts > Page title)
+	bool extraInfo;	  // play time, achievements and Home's monthly stats in the menus (Layouts > Extra info)
 	bool showCollections;
-	bool showGameArt;
 	bool showEmulators;
 	bool showFolderNamesAtRoot;
-	bool romsUseFolderBackground;
 	int defaultView;
 	bool gameSwitcherResumableOnly;
 
@@ -195,28 +232,27 @@ typedef struct
 	// Input
 	int buttonLayout; // BUTTON_LAYOUT_NINTENDO / BUTTON_LAYOUT_XBOX (A<->B, X<->Y everywhere; applies at next boot)
 	bool hintLabels;  // true: hints show the printed cap you press (only differs from logical when layout is Xbox)
-	int uiScale;	  // 0 = device native, 2 or 3 (ui_scale.h)
 
 } NextUISettings;
 
 #define CFG_DEFAULT_FONT_ID 1 // Next
-#define CFG_DEFAULT_COLOR1 0xffffffffU
+#define CFG_DEFAULT_COLOR1 0xdcdcdcffU
 #define CFG_DEFAULT_COLOR2 0x006666ffU
 #define CFG_DEFAULT_COLOR3 0x1e2329ffU
-#define CFG_DEFAULT_COLOR4 0xffffffffU
+#define CFG_DEFAULT_COLOR4 0xdcdcdcffU
 #define CFG_DEFAULT_COLOR5 0x000000ffU
-#define CFG_DEFAULT_COLOR6 0xffffffffU
+#define CFG_DEFAULT_COLOR6 0xdcdcdcffU
 #define CFG_DEFAULT_COLOR7 0x000000ffU
-#define CFG_DEFAULT_THUMBRADIUS 0 // unscaled!
 #define CFG_DEFAULT_SHOWCLOCK false
 #define CFG_DEFAULT_CLOCK24H true
 #define CFG_DEFAULT_SHOWBATTERYPERCENT false
 #define CFG_DEFAULT_SHOWSEARCHHINT true
+#define CFG_DEFAULT_SHOWRECENTHINT true
+#define CFG_DEFAULT_SHOWNETPLAYHINT true
 #define CFG_DEFAULT_SHOWMENUANIMATIONS true
 #define CFG_DEFAULT_SHOWMENUTRANSITIONS true
-#define CFG_DEFAULT_SHOWRECENTS true
+#define CFG_DEFAULT_SHOWRECENTS false // unused since the tab set lost Recent; kept so the key round-trips
 #define CFG_DEFAULT_SHOWCOLLECTIONS true
-#define CFG_DEFAULT_SHOWGAMEART true
 #define CFG_DEFAULT_SHOWEMULATORS true
 #define CFG_DEFAULT_SHOWFOLDERNAMESATROOT true
 #define CFG_DEFAULT_GAMESWITCHERSCALING GFX_SCALE_FULLSCREEN
@@ -225,18 +261,30 @@ typedef struct
 #define CFG_DEFAULT_SUSPENDTIMEOUTSECS 30
 #define CFG_DEFAULT_POWEROFFPROTECTION true
 #define CFG_DEFAULT_HAPTICS true
-#define CFG_DEFAULT_ROMSUSEFOLDERBACKGROUND true
 #define CFG_DEFAULT_SAVEFORMAT SAVE_FORMAT_SRM_UNCOMPRESSED
 #define CFG_DEFAULT_STATEFORMAT STATE_FORMAT_SRM_UNCOMPRESSED
 #define CFG_DEFAULT_EXTRACTEDFILENAME false
 #define CFG_DEFAULT_FNLEDS false
-#define CFG_DEFAULT_GAMEARTWIDTH 0.45
-#define CFG_DEFAULT_GAMEARTSTYLE ART_STYLE_THUMBNAIL
-#define CFG_DEFAULT_GAMEARTTYPE ART_TYPE_MIX
+#define CFG_DEFAULT_MENUSTYLE MENUSTYLE_MAIN_DEFAULT		 // Carousel (Consoles and Collections)
+#define CFG_DEFAULT_MENUSTYLE_TOOLS MENU_STYLE_GRID			 // the Tools tab's own default
+#define CFG_DEFAULT_GAMELISTSTYLE MENUSTYLE_GAMELIST_DEFAULT // Carousel
+// A main-menu tab's default style: Grid for Tools, Carousel for the others.
+#define CFG_DEFAULT_MENUSTYLE_FOR(cat) ((cat) == MENU_CAT_TOOLS ? CFG_DEFAULT_MENUSTYLE_TOOLS : CFG_DEFAULT_MENUSTYLE)
+#define CFG_DEFAULT_MENUORIENT MENUSTYLE_ORIENT_DEFAULT		// Horizontal
+#define CFG_DEFAULT_GAMELISTORIENT MENUSTYLE_ORIENT_DEFAULT // Horizontal
+#define CFG_DEFAULT_GAMELISTVALIGN MENUSTYLE_VALIGN_DEFAULT // Left
+#define CFG_DEFAULT_HOMESTYLE HOMESTYLE_DEFAULT				// Grid
 #define CFG_DEFAULT_WIFI false
 #define CFG_DEFAULT_VIEW SCREEN_GAMELIST
 #define CFG_DEFAULT_WIFI_DIAG false
 #define CFG_DEFAULT_SHOWTOOLS true
+#define CFG_DEFAULT_SHOWHOME true
+#define CFG_DEFAULT_CONSOLEART CONSOLE_ART_CONTROLLER
+#define CFG_DEFAULT_GAMELISTART GAME_LIST_ART_SCREENSHOT
+#define CFG_DEFAULT_BACKDROPART BACKDROP_ART_BOXART3D
+#define CFG_DEFAULT_BUTTONHINTS true
+#define CFG_DEFAULT_PAGETITLE true
+#define CFG_DEFAULT_EXTRAINFO true
 #define CFG_DEFAULT_FN1_TOOL ""
 #define CFG_DEFAULT_FN2_TOOL ""
 #define CFG_DEFAULT_BLUETOOTH false
@@ -275,7 +323,6 @@ typedef struct
 // Input defaults
 #define CFG_DEFAULT_BUTTON_LAYOUT BUTTON_LAYOUT_NINTENDO
 #define CFG_DEFAULT_HINT_LABELS true
-#define CFG_DEFAULT_UI_SCALE 0 // UI_SCALE_NATIVE
 
 void CFG_init(FontLoad_callback_t fontCallback, ColorSet_callback_t ccb);
 void CFG_print(void);
@@ -316,33 +363,58 @@ void CFG_setShowBatteryPercent(bool show);
 // itself stays reachable either way).
 bool CFG_getShowSearchHint(void);
 void CFG_setShowSearchHint(bool show);
+// Appearance > Show recent hint: the SELECT RECENT hint on the main menu (SELECT still opens the Game Switcher)
+bool CFG_getShowRecentHint(void);
+void CFG_setShowRecentHint(bool show);
+// Appearance > Show netplay hint: the Y NETPLAY hint in game lists and search (Y still starts netplay)
+bool CFG_getShowNetplayHint(void);
+void CFG_setShowNetplayHint(bool show);
 // Show/hide menu animations in main menu.
 bool CFG_getMenuAnimations(void);
 void CFG_setMenuAnimations(bool show);
 // Show/hide menu transitions between screens in main menu.
 bool CFG_getMenuTransitions(void);
 void CFG_setMenuTransitions(bool show);
-// Set thumbnail rounding radius.
-int CFG_getThumbnailRadius(void);
-void CFG_setThumbnailRadius(int radius);
 // Show/hide recently played in the main menu.
 bool CFG_getShowRecents(void);
 void CFG_setShowRecents(bool show);
 // Show/hide tools folder in the main menu.
 bool CFG_getShowTools(void);
 void CFG_setShowTools(bool show);
+// Show/hide the Home tab (Layouts > Home tab); it still shows when no other tab does.
+bool CFG_getShowHome(void);
+void CFG_setShowHome(bool show);
+// What the List draws behind the Consoles tab, CONSOLE_ART_* (Layouts > Controller); the setter stores an
+// out-of-range value as the default (Controller).
+int CFG_getConsoleArt(void);
+void CFG_setConsoleArt(int art);
+// Whether the Consoles tab shows each console's controller art (CFG_getConsoleArt() is Controller).
+bool CFG_getMenuControllerArt(void);
+// The List game list's picture, GAME_LIST_ART_* (Layouts > List art); the setter stores an out-of-range
+// value as the default.
+int CFG_getGameListArt(void);
+void CFG_setGameListArt(int art);
+// The Backdrop game list's item pictures, BACKDROP_ART_* (Layouts > Backdrop art); the setter stores an
+// out-of-range value as the default.
+int CFG_getBackdropArt(void);
+void CFG_setBackdropArt(int art);
+// Show/hide the bottom button hint bar on the launcher's Home, tab and game list screens (Layouts > Button hints).
+bool CFG_getButtonHints(void);
+void CFG_setButtonHints(bool show);
+// Show/hide the games' extra info in the launcher's menus (Layouts > Extra info): play time, achievements and Next on
+// Home and in the game lists, and Home's monthly stats strip. The Game Switcher keeps its own.
+bool CFG_getExtraInfo(void);
+void CFG_setExtraInfo(bool show);
+// Show/hide the page title: the main menu's tab row (or a lone tab's "NX Redux") and a game list's title (Layouts >
+// Page title). Hidden, the bar keeps its room and the status icons; L1/R1 still switch tabs.
+bool CFG_getPageTitle(void);
+void CFG_setPageTitle(bool show);
 // Show/hide collections in the main menu.
 bool CFG_getShowCollections(void);
 void CFG_setShowCollections(bool show);
 // Show/hide emulators in the main menu.
 bool CFG_getShowEmulators(void);
 void CFG_setShowEmulators(bool show);
-// Show/hide game art in the main menu.
-bool CFG_getShowGameArt(void);
-void CFG_setShowGameArt(bool show);
-// Use folder background or default background for roms
-bool CFG_getRomsUseFolderBackground(void);
-void CFG_setRomsUseFolderBackground(bool);
 // The scaling algorithm used for the game switcher preview image.
 int CFG_getGameSwitcherScaling(void);
 void CFG_setGameSwitcherScaling(int enumValue);
@@ -374,21 +446,30 @@ void CFG_setUseExtractedFileName(bool);
 // Enable/disable FN mode also shutting off LEDs.
 bool CFG_getFnLEDs(void);
 void CFG_setFnLEDs(bool);
-// Set game art width percentage.
-double CFG_getGameArtWidth(void);
-void CFG_setGameArtWidth(double zeroToOne);
-// Game art presentation style (ArtStyle): 0 = thumbnail on the right,
-// 1 = full-height background that fades into the list.
-int CFG_getGameArtStyle(void);
-void CFG_setGameArtStyle(int style);
-// Which stored art variant (ArtType) the game lists display: 0 = mix
-// composite, 1 = screenshot only, 2 = box art only.
-int CFG_getGameArtType(void);
-void CFG_setGameArtType(int type);
-// The art variant actually shown: the background style always uses the
-// screenshot (a mix composite's floating box art and logo read as clutter
-// behind a game list), otherwise the user's CFG_getGameArtType choice.
-int CFG_getEffectiveArtType(void);
+// Main menu tab layout per category (MENU_CAT_*): List, Grid or Carousel. A stored Backdrop (from an
+// older build) reads as Carousel without rewriting the stored value; an out-of-range category reads as List.
+int CFG_getMenuStyle(int category);
+void CFG_setMenuStyle(int category, int style);
+// Game list layout (MENU_STYLE_*: List, Grid, Carousel or Backdrop), whichever tab opened the list.
+int CFG_getGameListStyle(void);
+void CFG_setGameListStyle(int style);
+// Stored orientation (MENU_ORIENT_*) per main menu tab (MENU_CAT_*) and for game lists, kept whatever the style
+// (the Layouts page rows). An out-of-range category or value reads as Horizontal.
+int CFG_getMenuOrient(int category);
+void CFG_setMenuOrient(int category, int orient);
+int CFG_getGameListOrient(void);
+void CFG_setGameListOrient(int orient);
+// The game lists' Vertical alignment (MENU_VALIGN_*), the Layouts page's "Game lists alignment"; it applies only while
+// they draw Vertical (CFG_getGameListOrientEffective). An out-of-range value reads as Left.
+int CFG_getGameListVAlign(void);
+void CFG_setGameListVAlign(int valign);
+// The Home tab's layout (HOME_STYLE_*), the Layouts page's "Home layout". An out-of-range value reads as Grid.
+int CFG_getHomeStyle(void);
+void CFG_setHomeStyle(int style);
+// Effective orientation: Vertical only while the tab is Carousel, or the game lists are Carousel or Backdrop;
+// List and Grid always read Horizontal (menustyle_model.h).
+int CFG_getMenuOrientEffective(int category);
+int CFG_getGameListOrientEffective(void);
 // Show/hide folder names at root directory.
 bool CFG_getShowFolderNamesAtRoot(void);
 void CFG_setShowFolderNamesAtRoot(bool show);
@@ -477,11 +558,6 @@ void CFG_setButtonLayout(int layout);
 bool CFG_getHintLabels(void);
 void CFG_setHintLabels(bool physical);
 
-// UI scale: 0 follows the device (Brick 3x, others 2x); 2 or 3 forces it.
-// Resolved at GFX_init (before fonts load); CFG_init mirrors it into settings.
-// A running process switches with GFX_reloadScale().
-int CFG_getUIScale(void);
-void CFG_setUIScale(int scale);
 
 void CFG_sync(void);
 void CFG_quit(void);

@@ -1,67 +1,82 @@
 #!/bin/sh
 # Regenerate the arcade display-name tables the launcher falls back to when a
 # ROM has no map.txt alias (content.c ArcadeNames). One table per emulator
-# tag, written to skeleton/SYSTEM/res/arcade/<TAG>.txt as "<zip stem>\t<title>"
-# lines, sorted by stem. BIOS sets are written with a "." title so hide()
+# tag, written to skeleton/SYSTEM/res/arcade/<TAG>.txt as
+# "<zip stem>\t<title>[\t<qualifier>]" lines, sorted by stem. BIOS sets are written with a "." title so hide()
 # drops them from game lists, the same way a "."-prefixed map.txt alias does.
 # Titles are plain: trailing "(...)"/"[...]" groups (revision, region, date,
 # cartridge id) are dropped and only the first of " / " alternate names kept,
-# so "1942 (Revision B)" shows as "1942". Clones that collapse to the same
-# title in one folder fall back to their filenames (Directory_index's run
-# disambiguation).
+# so "1942 (Revision B)" shows as "1942". The trailing bracket groups of the
+# full description are kept as the qualifier ("(Revision B)"): clones that
+# collapse to the same title in one folder are labelled by region, by the
+# whole qualifier, or else by "<title> (<zip stem>)" (ArcadeNames_disambiguate,
+# called from Directory_index's run disambiguation).
 #
 # The tables are committed rather than generated at build time: the FBNeo
-# core source is only fetched when cores are compiled, and the Flycast
-# checkout (workspace/all/other/flycast/flycast) is gitignored.
+# and Flycast core sources are only fetched when cores are compiled.
 #
 #   FBN.txt  FinalBurn Neo Arcade + Neo Geo DATs (ClrMame Pro XML), the core
 #            pinned by fbneo_HASH in workspace/tg5040/cores/Makefile
 #   DC.txt   Flycast's Naomi/Naomi 2/Atomiswave/System SP tables
-#            (core/hw/naomi/naomi_roms.cpp Games[] and BIOS[])
+#            (core/hw/naomi/naomi_roms.cpp Games[] and BIOS[]), the core
+#            pinned by flycast_HASH in workspace/tg5040/cores/Makefile
 #
 # usage: scripts/gen-arcade-names.sh [fbneo_src_dir] [flycast_src_dir]
 set -eu
 cd "$(dirname "$0")/.."
 
 FBNEO=${1:-workspace/tg5040/cores/src/fbneo}
-FLYCAST=${2:-workspace/all/other/flycast/flycast}
+FLYCAST=${2:-workspace/tg5040/cores/src/flycast}
 OUT=skeleton/SYSTEM/res/arcade
 export LC_ALL=C
 
 mkdir -p "$OUT"
 
-# "<stem>\t<title>" in, plain title out (see above); a title that would be
-# stripped to nothing is kept whole
+# "<stem>\t<title>" in, "<stem>\t<plain title>[\t<qualifier>]" out (see
+# above); a title that would be stripped to nothing is kept whole
 plain_titles() {
 	awk -F '\t' -v OFS='\t' '
+		# drop trailing bracket groups, nested ones included:
+		# "Dragon Spirit (new version (DS3))" -> "Dragon Spirit"
+		function strip_groups(t,    n, close_ch, depth, j, c) {
+			for (;;) {
+				sub(/[ \t]+$/, "", t)
+				n = length(t)
+				close_ch = substr(t, n, 1)
+				if (close_ch != ")" && close_ch != "]")
+					break
+				depth = 0
+				for (j = n; j > 0; j--) {
+					c = substr(t, j, 1)
+					if (c == ")" || c == "]")
+						depth++
+					else if ((c == "(" || c == "[") && --depth == 0)
+						break
+				}
+				if (j <= 1)
+					break # unbalanced, or the whole title is one group
+				t = substr(t, 1, j - 1)
+			}
+			return t
+		}
 		{
 			t = $2
 			if (t != ".") {
+				# the qualifier comes from the whole description, so
+				# "A (Japan) / B (Japan)" keeps "(Japan)"
+				full = $2
+				sub(/[ \t]+$/, "", full)
+				base = strip_groups(full)
+				q = base == "" ? "" : substr(full, length(base) + 1)
+				sub(/^[ \t]+/, "", q)
 				i = index(t, " / ")
 				if (i > 1)
 					t = substr(t, 1, i - 1)
-				# drop trailing bracket groups, nested ones included:
-				# "Dragon Spirit (new version (DS3))" -> "Dragon Spirit"
-				for (;;) {
-					sub(/[ \t]+$/, "", t)
-					n = length(t)
-					close_ch = substr(t, n, 1)
-					if (close_ch != ")" && close_ch != "]")
-						break
-					depth = 0
-					for (j = n; j > 0; j--) {
-						c = substr(t, j, 1)
-						if (c == ")" || c == "]")
-							depth++
-						else if ((c == "(" || c == "[") && --depth == 0)
-							break
-					}
-					if (j <= 1)
-						break # unbalanced, or the whole title is one group
-					t = substr(t, 1, j - 1)
-				}
+				t = strip_groups(t)
 				if (t != "")
 					$2 = t
+				if (q != "")
+					$2 = $2 "\t" q
 			}
 			print
 		}

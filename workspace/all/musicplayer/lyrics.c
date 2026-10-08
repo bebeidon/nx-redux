@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "lyrics.h"
+#include "embedded_lyrics.h"
 #include "radio_net.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,6 +25,7 @@ static int lyrics_current_index = 0;
 static bool lyrics_available = false;
 
 // Dedup tracking
+static char last_filepath[512] = "";
 static char last_artist[256] = "";
 static char last_title[256] = "";
 
@@ -164,49 +166,67 @@ static void save_lyrics_to_cache(const char* cache_path, const char* lrc_text) {
 
 // Thread argument
 typedef struct {
+	char filepath[512];
 	char artist[256];
 	char title[256];
 	int duration_sec;
 	int generation; // to detect if this fetch is still current
 } FetchArgs;
 
-// Background fetch thread function (detached — must not touch shared state if stale)
-static void* fetch_thread_func(void* arg) {
-	PWR_pinToCores(CPU_CORE_EFFICIENCY);
-	FetchArgs* args = (FetchArgs*)arg;
-	int my_gen = args->generation;
-
-	// Temporary buffer for parsing (thread-local, not shared)
-	LyricLine* tmp_lines = (LyricLine*)malloc(sizeof(LyricLine) * LYRICS_MAX_LINES);
-	if (!tmp_lines) {
-		free(args);
-		return NULL;
+// Spread untimed lyrics evenly over the track so the two-line view still
+// advances. Blank lines (stanza breaks) are dropped. Returns the line count.
+static int pace_plain_lyrics(const char* text, int duration_ms, LyricLine* lines, int max_lines) {
+	int total = 0;
+	for (const char* p = text; *p;) {
+		const char* eol = strchr(p, '\n');
+		size_t len = eol ? (size_t)(eol - p) : strlen(p);
+		if (strspn(p, " \t") < len)
+			total++;
+		p += len + (eol ? 1 : 0);
 	}
+	if (total > max_lines)
+		total = max_lines;
+	if (total == 0)
+		return 0;
+	// Unknown length: a steady 4 s per line
+	int64_t span_ms = duration_ms > 0 ? duration_ms : (int64_t)total * 4000;
 
-	ensure_cache_dir();
-
-	char cache_path[768];
-	get_cache_filepath(args->artist, args->title, cache_path, sizeof(cache_path));
-	// Try disk cache first
-	int count = load_cached_lyrics(cache_path, tmp_lines, LYRICS_MAX_LINES);
-	if (count > 0) {
-		// Publish under the lock so the gen check and the write are atomic
-		// against a concurrent Lyrics_fetch (which bumps the generation and
-		// resets state under the same lock) — the disk path finishes in ms, so
-		// this is exactly the stale-overwrite window.
-		pthread_mutex_lock(&lyrics_mutex);
-		if (fetch_generation == my_gen) {
-			memcpy(lyrics_lines, tmp_lines, sizeof(LyricLine) * count);
-			lyrics_line_count = count;
-			lyrics_current_index = 0;
-			lyrics_available = true;
+	int count = 0;
+	for (const char* p = text; *p && count < total;) {
+		const char* eol = strchr(p, '\n');
+		size_t len = eol ? (size_t)(eol - p) : strlen(p);
+		size_t lead = strspn(p, " \t");
+		if (lead < len) {
+			size_t n = len - lead;
+			if (n > sizeof(lines[count].text) - 1)
+				n = sizeof(lines[count].text) - 1;
+			memcpy(lines[count].text, p + lead, n);
+			lines[count].text[n] = '\0';
+			lines[count].time_ms = (int)(span_ms * count / total);
+			count++;
 		}
-		pthread_mutex_unlock(&lyrics_mutex);
-		free(tmp_lines);
-		free(args);
-		return NULL;
+		p += len + (eol ? 1 : 0);
 	}
+	return count;
+}
 
+// Publish parsed lines if this fetch is still current. The gen check and the
+// write are atomic under the lock against a concurrent Lyrics_fetch (which
+// bumps the generation and resets state under the same lock).
+static void publish_lines(const LyricLine* lines, int count, int my_gen) {
+	pthread_mutex_lock(&lyrics_mutex);
+	if (count > 0 && fetch_generation == my_gen) {
+		memcpy(lyrics_lines, lines, sizeof(LyricLine) * count);
+		lyrics_line_count = count;
+		lyrics_current_index = 0;
+		lyrics_available = true;
+	}
+	pthread_mutex_unlock(&lyrics_mutex);
+}
+
+// Look the track up on LRCLIB (exact match, then fuzzy search).
+// Returns malloc'd synced LRC text, or NULL.
+static char* fetch_online_lrc(const FetchArgs* args, int my_gen) {
 	// URL-encode artist and title separately
 	char encoded_artist[512];
 	char encoded_title[512];
@@ -220,11 +240,8 @@ static void* fetch_thread_func(void* arg) {
 			 encoded_artist, encoded_title, args->duration_sec);
 	// Fetch LRCLIB API response
 	uint8_t* response_buf = (uint8_t*)malloc(64 * 1024);
-	if (!response_buf) {
-		free(tmp_lines);
-		free(args);
+	if (!response_buf)
 		return NULL;
-	}
 
 	const char* synced_lyrics = NULL;
 	JSON_Value* root = NULL;
@@ -254,8 +271,6 @@ static void* fetch_thread_func(void* arg) {
 		free(response_buf);
 		if (root)
 			json_value_free(root);
-		free(tmp_lines);
-		free(args);
 		return NULL;
 	}
 
@@ -295,32 +310,63 @@ static void* fetch_thread_func(void* arg) {
 
 	free(response_buf);
 
-	if (!synced_lyrics) {
-		if (root)
-			json_value_free(root);
-		free(tmp_lines);
+	char* lrc = synced_lyrics ? strdup(synced_lyrics) : NULL;
+	if (root)
+		json_value_free(root);
+	return lrc;
+}
+
+// Background fetch thread function (detached — must not touch shared state if stale).
+// Order: timed lyrics embedded in the file, the disk cache, LRCLIB, and last
+// untimed embedded lyrics paced over the track.
+static void* fetch_thread_func(void* arg) {
+	PWR_pinToCores(CPU_CORE_EFFICIENCY);
+	FetchArgs* args = (FetchArgs*)arg;
+	int my_gen = args->generation;
+
+	// Temporary buffer for parsing (thread-local, not shared)
+	LyricLine* tmp_lines = (LyricLine*)malloc(sizeof(LyricLine) * LYRICS_MAX_LINES);
+	if (!tmp_lines) {
 		free(args);
 		return NULL;
 	}
 
-	// Save raw LRC text to cache
-	save_lyrics_to_cache(cache_path, synced_lyrics);
-
-	// Parse into temp buffer
-	count = parse_lrc_text(synced_lyrics, tmp_lines, LYRICS_MAX_LINES);
-	json_value_free(root);
-
-	// Only write to shared state if this fetch is still current (atomic gen
-	// check + publish under the lock).
-	pthread_mutex_lock(&lyrics_mutex);
-	if (count > 0 && fetch_generation == my_gen) {
-		memcpy(lyrics_lines, tmp_lines, sizeof(LyricLine) * count);
-		lyrics_line_count = count;
-		lyrics_current_index = 0;
-		lyrics_available = true;
+	bool embedded_synced = false;
+	char* embedded = EmbeddedLyrics_read(args->filepath, &embedded_synced);
+	int count = 0;
+	if (embedded && embedded_synced) {
+		count = parse_lrc_text(embedded, tmp_lines, LYRICS_MAX_LINES);
+		if (count > 0)
+			goto done;
 	}
-	pthread_mutex_unlock(&lyrics_mutex);
 
+	if (args->artist[0] || args->title[0]) {
+		ensure_cache_dir();
+
+		char cache_path[768];
+		get_cache_filepath(args->artist, args->title, cache_path, sizeof(cache_path));
+		// Try disk cache first
+		count = load_cached_lyrics(cache_path, tmp_lines, LYRICS_MAX_LINES);
+		if (count > 0)
+			goto done;
+
+		char* lrc = fetch_online_lrc(args, my_gen);
+		if (lrc) {
+			// Save raw LRC text to cache
+			save_lyrics_to_cache(cache_path, lrc);
+			count = parse_lrc_text(lrc, tmp_lines, LYRICS_MAX_LINES);
+			free(lrc);
+			if (count > 0)
+				goto done;
+		}
+	}
+
+	if (embedded && !embedded_synced)
+		count = pace_plain_lyrics(embedded, args->duration_sec * 1000, tmp_lines, LYRICS_MAX_LINES);
+
+done:
+	publish_lines(tmp_lines, count, my_gen);
+	free(embedded);
 	free(tmp_lines);
 	free(args);
 	return NULL;
@@ -333,17 +379,21 @@ void Lyrics_clear(void) {
 	lyrics_current_index = 0;
 	lyrics_available = false;
 	pthread_mutex_unlock(&lyrics_mutex);
+	last_filepath[0] = '\0';
 	last_artist[0] = '\0';
 	last_title[0] = '\0';
 }
 
-void Lyrics_fetch(const char* artist, const char* title, int duration_sec) {
-	if (!artist || !title || (artist[0] == '\0' && title[0] == '\0')) {
+void Lyrics_fetch(const char* filepath, const char* artist, const char* title, int duration_sec) {
+	if (!filepath)
+		filepath = "";
+	if (!artist || !title || (filepath[0] == '\0' && artist[0] == '\0' && title[0] == '\0')) {
 		return;
 	}
 
 	// Dedup check
-	if (strcmp(last_artist, artist) == 0 &&
+	if (strcmp(last_filepath, filepath) == 0 &&
+		strcmp(last_artist, artist) == 0 &&
 		strcmp(last_title, title) == 0) {
 		return;
 	}
@@ -359,6 +409,7 @@ void Lyrics_fetch(const char* artist, const char* title, int duration_sec) {
 	pthread_mutex_unlock(&lyrics_mutex);
 
 	// Reset dedup keys (main-thread only)
+	snprintf(last_filepath, sizeof(last_filepath), "%s", filepath);
 	strncpy(last_artist, artist, sizeof(last_artist) - 1);
 	last_artist[sizeof(last_artist) - 1] = '\0';
 	strncpy(last_title, title, sizeof(last_title) - 1);
@@ -368,6 +419,7 @@ void Lyrics_fetch(const char* artist, const char* title, int duration_sec) {
 	FetchArgs* args = (FetchArgs*)malloc(sizeof(FetchArgs));
 	if (!args)
 		return;
+	snprintf(args->filepath, sizeof(args->filepath), "%s", filepath);
 	strncpy(args->artist, artist, sizeof(args->artist) - 1);
 	args->artist[sizeof(args->artist) - 1] = '\0';
 	strncpy(args->title, title, sizeof(args->title) - 1);
@@ -431,15 +483,26 @@ const char* Lyrics_getCurrentLine(int position_ms) {
 }
 
 const char* Lyrics_getNextLine(void) {
+	return Lyrics_getLineAfter(1);
+}
+
+const char* Lyrics_getLineAfter(int k) {
 	pthread_mutex_lock(&lyrics_mutex);
 	const char* text = NULL;
 	if (lyrics_available && lyrics_line_count > 0) {
-		int next = lyrics_current_index + 1;
-		if (next < lyrics_line_count)
-			text = lyrics_lines[next].text;
+		int idx = lyrics_current_index + k;
+		if (idx >= 0 && idx < lyrics_line_count)
+			text = lyrics_lines[idx].text;
 	}
 	pthread_mutex_unlock(&lyrics_mutex);
 	return text;
+}
+
+int Lyrics_getCurrentIndex(void) {
+	pthread_mutex_lock(&lyrics_mutex);
+	int idx = (lyrics_available && lyrics_line_count > 0) ? lyrics_current_index : -1;
+	pthread_mutex_unlock(&lyrics_mutex);
+	return idx;
 }
 
 long Lyrics_getCacheSize(void) {

@@ -1,3 +1,4 @@
+# license: modifies Handy (https://github.com/libretro/libretro-handy), zlib (lynx/license.txt); this patch is distributed under the same license.
 diff --git a/Makefile b/Makefile
 index 088c344..9573f27 100644
 --- a/Makefile

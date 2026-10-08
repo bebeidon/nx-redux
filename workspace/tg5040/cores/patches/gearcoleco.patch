@@ -1,3 +1,4 @@
+# license: modifies Gearcoleco (https://github.com/drhelius/Gearcoleco), GPL-3.0 (LICENSE); this patch is distributed under the same license.
 diff --git a/platforms/libretro/Makefile b/platforms/libretro/Makefile
 index 581ee84..d9db102 100644
 --- a/platforms/libretro/Makefile

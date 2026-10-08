@@ -1,3 +1,4 @@
+# license: modifies FB Neo (https://github.com/libretro/FBNeo), FB Neo license (src/license.txt); this patch is distributed under the same license.
 diff --git a/src/burner/libretro/Makefile b/src/burner/libretro/Makefile
 old mode 100644
 new mode 100755

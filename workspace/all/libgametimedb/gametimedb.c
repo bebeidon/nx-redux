@@ -1,6 +1,7 @@
 // heavily modified from the Onion original: https://github.com/OnionUI/Onion/blob/main/src/playActivity/playActivityDB.h
 #include <stdlib.h>
 #include <stdbool.h>
+#include <ctype.h>
 #include <sys/stat.h>
 #include <stdio.h>
 #include <string.h>
@@ -18,10 +19,7 @@
 
 #define GAMETIME_LOG_PATH SHARED_USERDATA_PATH
 
-// SHARED_USERDATA_PATH is a runtime array (not a string literal) on desktop
-// builds (see paths.h), so it can no longer be adjacent-string-literal
-// concatenated at compile time; build the same path with snprintf instead
-// (byte-identical to the old macro on device).
+// The play-activity database path, built with snprintf.
 static char* gametime_log_file(void) {
 	static char buf[MAX_PATH];
 	snprintf(buf, sizeof(buf), "%s/game_logs.sqlite", GAMETIME_LOG_PATH);
@@ -39,12 +37,6 @@ static char* gametime_log_file(void) {
 #define MAX_PLAUSIBLE_PLAY_TIME (24 * 60 * 60) // 86400 s = 24 h
 
 sqlite3* play_activity_db_open(void) {
-	// no-op on device; this library is its own shared object on desktop, so
-	// its copy of the PATHS_* globals (paths.c) needs its own init call --
-	// the caller's PATHS_init(PLATFORM) in main() does not reach across the
-	// dylib boundary. Idempotent: safe to call on every open.
-	PATHS_init(PLATFORM);
-
 	mkdir(GAMETIME_LOG_PATH, 0777);
 	char* log_file = gametime_log_file();
 	bool db_exists = exists(log_file);
@@ -98,7 +90,10 @@ void free_play_activities(PlayActivities* pa_ptr) {
 void get_rom_image_path(char* rom_file, char* out_image_path) {
 	char rom_abs[MAX_PATH];
 	snprintf(rom_abs, sizeof(rom_abs), "%s/%s", ROMS_PATH, rom_file);
-	ROM_mediaArtPath(rom_abs, out_image_path, STR_MAX - 1);
+	// the game's screenshot (the mix composite is retired), else an older library's mix
+	ROM_mediaArtVariantPath(rom_abs, "screenshot", out_image_path, STR_MAX - 1);
+	if (!exists(out_image_path))
+		ROM_mediaArtPath(rom_abs, out_image_path, STR_MAX - 1);
 }
 
 int play_activity_db_transaction(sqlite3* game_log_db, int (*exec_transaction)(sqlite3*)) {
@@ -131,7 +126,8 @@ sqlite3_stmt* play_activity_db_prepare(sqlite3* game_log_db, char* sql) {
 int play_activity_get_total_play_time(void) {
 	int total_play_time = 0;
 	char* sql =
-		"SELECT SUM(play_time_total) FROM (SELECT SUM(play_time) AS play_time_total FROM play_activity GROUP BY rom_id) "
+		"SELECT SUM(play_time_total) FROM (SELECT SUM(play_time) AS play_time_total FROM play_activity "
+		"JOIN rom ON rom.id = play_activity.rom_id WHERE " GAMETIME_NOT_EXCLUDED_SQL " GROUP BY rom_id) "
 		"WHERE play_time_total > 60;";
 	sqlite3_stmt* stmt;
 
@@ -159,6 +155,7 @@ PlayActivities* play_activity_find_all(void) {
 		"           datetime(MIN(play_activity.created_at), 'unixepoch') AS first_played_at, "
 		"           datetime(MAX(play_activity.created_at), 'unixepoch') AS last_played_at "
 		"    FROM rom LEFT JOIN play_activity ON rom.id = play_activity.rom_id "
+		"    WHERE " GAMETIME_NOT_EXCLUDED_SQL
 		"    GROUP BY rom.id) "
 		"WHERE play_time_total > 0 "
 		"ORDER BY play_time_total DESC;";
@@ -383,8 +380,21 @@ int __db_get_active_closed_activity(sqlite3* game_log_db) {
 	return rom_id;
 }
 
+bool play_activity_is_excluded(const char* rom_file_path) {
+	if (!rom_file_path)
+		return false;
+	char lower[MAX_PATH];
+	size_t n = 0;
+	for (; rom_file_path[n] && n < sizeof(lower) - 1; n++)
+		lower[n] = (char)tolower((unsigned char)rom_file_path[n]);
+	lower[n] = '\0';
+	return (n >= 13 && strcmp(lower + n - 13, "portmaster.sh") == 0) || strstr(lower, "portmaster.pak") != NULL;
+}
+
 void play_activity_start(char* rom_file_path) {
 	//LOG_info("\n:: play_activity_start(%s)\n", rom_file_path);
+	if (play_activity_is_excluded(rom_file_path))
+		return; // not a game
 	int rom_id = play_activity_transaction_rom_find_by_file_path(rom_file_path, true);
 	if (rom_id == ROM_NOT_FOUND) {
 		exit(1);

@@ -1,3 +1,4 @@
+# license: modifies mGBA (https://github.com/libretro/mgba), MPL-2.0 (LICENSE); this patch is distributed under the same license.
 diff --git forkSrcPrefix/Makefile.libretro forkDstPrefix/Makefile.libretro
 index 108148f4579f4727146e5b8c1e05ef7382654208..35e6399147a4ef75947ecb2ad4a94f0820ef24d0 100644
 --- forkSrcPrefix/Makefile.libretro

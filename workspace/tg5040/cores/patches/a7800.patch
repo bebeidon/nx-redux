@@ -1,3 +1,4 @@
+# license: modifies ProSystem (https://github.com/libretro/prosystem-libretro), GPL-2.0 (License.txt); this patch is distributed under the same license.
 diff --git a/Makefile b/Makefile
 index dc2a31c..2a8bca2 100644
 --- a/Makefile

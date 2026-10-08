@@ -19,9 +19,9 @@ reset_card() {
 	mkdir -p "$SYS/paks/Emus/N64.pak" "$SYS/paks/Emus/FBN.pak" \
 	         "$SYS/paks/Tools/Game Tracker.pak"
 	# current-layout SD paks: shipped-name + community
-	mkdir -p "$SD/Emus/N64.pak" "$SD/Emus/PSP.pak" "$SD/Tools/Game Tracker.pak"
+	mkdir -p "$SD/Emus/N64.pak" "$SD/Emus/MyEmu.pak" "$SD/Tools/Game Tracker.pak"
 	printf 'x' > "$SD/Emus/N64.pak/launch.sh"
-	printf 'x' > "$SD/Emus/PSP.pak/launch.sh"
+	printf 'x' > "$SD/Emus/MyEmu.pak/launch.sh"
 	printf 'x' > "$SD/Tools/Game Tracker.pak/launch.sh"
 	# legacy platform dirs: shipped-name, community, collision, .media
 	mkdir -p "$SD/Emus/$PLAT/FBN.pak" "$SD/Emus/$PLAT/PSP2.pak" \
@@ -81,19 +81,19 @@ SDCARD_PATH="$SD" NX_LEGACY_FLAG="$FLAG" sh "$SCRIPT" "$PLAT"
 # current layout
 [ ! -d "$SD/Emus/N64.pak" ]              || fail "shipped-name emu pak not deleted"
 [ ! -d "$SD/Tools/Game Tracker.pak" ]    || fail "shipped-name tool pak (space) not deleted"
-[ -d "$SD/Emus/PSP.pak" ]                || fail "community pak touched"
+[ -d "$SD/Emus/MyEmu.pak" ]                || fail "community pak touched"
 # legacy dir
 [ ! -d "$SD/Emus/$PLAT/FBN.pak" ]        || fail "legacy shipped-name pak not deleted"
-[ -d "$SD/Emus/PSP2.pak" ]               || fail "legacy community pak not hoisted"
+# community paks stay in the platform folder (they hardcode it; the hoist was dropped in 349dc33e)
+[ -d "$SD/Emus/$PLAT/PSP2.pak" ] && [ ! -d "$SD/Emus/PSP2.pak" ] || fail "legacy community pak moved"
 [ "$(cat "$SD/Emus/COLL.pak/launch.sh")" = "current" ] || fail "collision clobbered current pak"
 [ -d "$SD/Emus/$PLAT" ]                  || fail "collision dir removed despite leftover"
 [ -d "$SD/Emus/$PLAT/COLL.pak" ]         || fail "colliding legacy pak vanished"
-grep -q "SKIPPED .*COLL.pak" "$REPORT"   || fail "no SKIPPED line for collision"
-# .media merge: shipped bg wins, user art hoisted, legacy .media gone
-[ "$(cat "$SD/Tools/.media/bg.png")" = "new-bg" ]              || fail "shipped bg clobbered"
-[ "$(cat "$SD/Tools/.media/Custom.pak/bg.png")" = "user-art" ] || fail "user art not merged"
-[ ! -d "$SD/Tools/$PLAT/.media" ]        || fail "legacy .media not removed"
-[ ! -d "$SD/Tools/$PLAT" ]               || fail "empty legacy Tools dir not removed"
+# (no SKIPPED report: nothing is hoisted any more, so a same-name flat pak and platform pak never collide)
+# .media: the platform folder's art is left in place (not a pak: never touched since 349dc33e), the shipped bg intact
+[ "$(cat "$SD/Tools/.media/bg.png")" = "new-bg" ]                      || fail "shipped bg clobbered"
+[ "$(cat "$SD/Tools/$PLAT/.media/Custom.pak/bg.png")" = "user-art" ] || fail "user art moved or lost"
+[ -d "$SD/Tools/$PLAT" ]                 || fail "Tools platform dir removed while it still holds user art"
 # untouchables + READMEs
 [ -f "$SD/Emus/shared/PortMaster/user.cfg" ] || fail "Emus/shared touched"
 [ -f "$SD/Emus/README.txt" ]             || fail "Emus README missing"
@@ -107,10 +107,9 @@ grep -q "SKIPPED .*COLL.pak" "$REPORT"   || fail "no SKIPPED line for collision"
 [ -d "$SYS/$PLAT" ]                              || fail "legacy system dir removed on legacy boot"
 # foreign platform (formerly-shared card): swept wholesale even under legacy boot
 [ ! -d "$SD/Emus/$FOREIGN/FBN.pak" ]   || fail "foreign shipped-name pak not deleted"
-[ -d "$SD/Emus/FOREIGN.pak" ]          || fail "foreign community pak not hoisted"
-[ ! -d "$SD/Emus/$FOREIGN" ]           || fail "foreign legacy Emus dir not removed"
-[ ! -d "$SD/Tools/$FOREIGN" ]          || fail "foreign legacy Tools dir not removed"
-[ "$(cat "$SD/Tools/.media/foreignart/art.png")" = "foreign-art" ] || fail "foreign user art not rescued"
+# ...but its community pak and art are left where they are (only shipped names and emptied dirs go)
+[ -d "$SD/Emus/$FOREIGN/FOREIGN.pak" ] && [ ! -d "$SD/Emus/FOREIGN.pak" ] || fail "foreign community pak moved"
+[ "$(cat "$SD/Tools/$FOREIGN/.media/foreignart/art.png")" = "foreign-art" ] || fail "foreign user art moved or lost"
 [ "$(cat "$SD/Tools/.media/bg.png")" = "new-bg" ] || fail "foreign bg clobbered current .media"
 [ ! -d "$SYS/$FOREIGN" ]               || fail "foreign .system tree kept despite being foreign"
 

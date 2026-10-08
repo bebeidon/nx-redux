@@ -6,7 +6,6 @@
 !skeleton/BASE/Emus/**/*.so
 !skeleton/SYSTEM/shared/lib/*.so
 *.elf
-!skeleton/SYSTEM/**/N64.pak/m64p-server.elf
 *.dtb
 *.zip
 !skeleton/BASE/Emus/shared/PortMaster/files/*
@@ -40,12 +39,6 @@ libchdr
 **/other/mupen64plus/*
 !**/other/mupen64plus/README.md
 !**/other/mupen64plus/*.patch
-**/other/flycast/*
-!**/other/flycast/README.md
-!**/other/flycast/*.patch
-!**/other/flycast/*.cmake
-!**/other/flycast/cmake-hints/
-!**/other/flycast/cmake-hints/**
 **/other/sdl2-drastic/SDL_drastic
 **/other/sdl2-drastic/extra-deps
 **/other/sdl2-drastic/output
@@ -79,3 +72,11 @@ workspace/all/n64-netplay-server/tests/test_client
 workspace/all/n64-netplay-server/**/*.dSYM/
 .clangd-shim
 scripts/bench/results/**/*.log
+
+# ScreenScraper dev credentials (scripts/gen-ss-credentials.sh)
+workspace/all/scraper/ss_credentials.h
+.env
+
+# third-party prebuilts built from pinned source (workspace/all/prebuilts/*.sh)
+workspace/all/prebuilts/work
+workspace/all/prebuilts/output
