@@ -14,7 +14,7 @@ INIT_IF_NECESSARY=toolchains/$(PLATFORM)-toolchain/.build
 IMAGE_NAME=ghcr.io/loveretro/$(PLATFORM)-toolchain:latest
 
 all: $(INIT_IF_NECESSARY)
-	docker run -it --rm -v $(HOST_WORKSPACE):$(GUEST_WORKSPACE) $(IMAGE_NAME) /bin/bash
+	docker run -it --rm -v $(HOST_WORKSPACE):$(GUEST_WORKSPACE):Z $(IMAGE_NAME) /bin/bash
 
 $(INIT_IF_NECESSARY): $(GIT_IF_NECESSARY)
 	cd toolchains/$(PLATFORM)-toolchain && make .build
@@ -28,13 +28,13 @@ clean:
 	cd toolchains/$(PLATFORM)-toolchain && make clean
 
 build: $(INIT_IF_NECESSARY)
-	docker run --rm -v $(HOST_WORKSPACE):$(GUEST_WORKSPACE) -e COMPILE_CORES=$(COMPILE_CORES) $(IMAGE_NAME) /bin/bash -c '. ~/.bashrc && cd /root/workspace && make'
+	docker run --rm -v $(HOST_WORKSPACE):$(GUEST_WORKSPACE):Z -e COMPILE_CORES=$(COMPILE_CORES) $(IMAGE_NAME) /bin/bash -c '. ~/.bashrc && cd /root/workspace && make'
 
 build-cores: $(INIT_IF_NECESSARY)
-	docker run --rm -v $(HOST_WORKSPACE):$(GUEST_WORKSPACE) -e COMPILE_CORES=$(COMPILE_CORES) $(IMAGE_NAME) /bin/bash -c '. ~/.bashrc && cd /root/workspace && make cores'
+	docker run --rm -v $(HOST_WORKSPACE):$(GUEST_WORKSPACE):Z -e COMPILE_CORES=$(COMPILE_CORES) $(IMAGE_NAME) /bin/bash -c '. ~/.bashrc && cd /root/workspace && make cores'
 
 build-core: $(INIT_IF_NECESSARY)
 ifndef CORE
 	$(error CORE is not set)
 endif
-	docker run --rm -v $(HOST_WORKSPACE):$(GUEST_WORKSPACE) -e COMPILE_CORES=$(COMPILE_CORES) -e CORE=$(CORE) $(IMAGE_NAME) /bin/bash -c '. ~/.bashrc && cd /root/workspace && make core'
+	docker run --rm -v $(HOST_WORKSPACE):$(GUEST_WORKSPACE):Z -e COMPILE_CORES=$(COMPILE_CORES) -e CORE=$(CORE) $(IMAGE_NAME) /bin/bash -c '. ~/.bashrc && cd /root/workspace && make core'
