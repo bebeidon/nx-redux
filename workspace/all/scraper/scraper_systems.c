@@ -64,7 +64,7 @@ static const SystemMapping systems[] = {
 
 	// Sony
 	{"PS", 57, "PlayStation"},
-	{"PSX", 57, "PlayStation"},
+	{"SWAN", 57, "PlayStation"},
 	{"PS1", 57, "PlayStation"},
 	{"PSP", 61, "PlayStation Portable"},
 	{"PPSSPP", 61, "PlayStation Portable"},
