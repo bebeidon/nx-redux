@@ -26,6 +26,11 @@ export DATETIME_PATH="$SHARED_USERDATA_PATH/datetime.txt"
 export SHARED_SYSTEM_PATH="$SDCARD_PATH/.system/shared"
 export HOME="$USERDATA_PATH"
 
+# Keep kernel messages off the 115200-baud serial console (dmesg still records them).
+# At loglevel 8 the xradio Wi-Fi join burst stalls the Brick Pro's I2C stick polling,
+# and the stock sunxi_i2c timeout path then panics (NextUI#824).
+echo "0 7 1 7" > /proc/sys/kernel/printk 2>/dev/null
+
 #######################################
 
 if [ -f "/tmp/poweroff" ]; then
