@@ -292,9 +292,9 @@ static const char* valign_labels[] = {"Left", "Right"};
 static int valign_values[] = {MENU_VALIGN_LEFT, MENU_VALIGN_RIGHT};
 static SettingItem* game_list_valign_item = NULL;
 /* Game lists' List art and Backdrop art: under their alignment row, each shown only while they draw its style */
-static const char* list_art_labels[] = {"Screenshot", "Mix", "3D box art", "2D box art", "Wheel"};
+static const char* list_art_labels[] = {"Screenshot", "Mix", "3D box art", "2D box art", "Wheel", "None"};
 static int list_art_values[] = {GAME_LIST_ART_SCREENSHOT, GAME_LIST_ART_MIX, GAME_LIST_ART_BOXART3D,
-								GAME_LIST_ART_BOXART2D, GAME_LIST_ART_WHEEL};
+								GAME_LIST_ART_BOXART2D, GAME_LIST_ART_WHEEL, GAME_LIST_ART_NONE};
 static SettingItem* list_art_item = NULL;
 static const char* backdrop_art_labels[] = {"3D box art", "2D box art", "Wheel"};
 static int backdrop_art_values[] = {BACKDROP_ART_BOXART3D, BACKDROP_ART_BOXART2D, BACKDROP_ART_WHEEL};
@@ -779,15 +779,17 @@ static void reset_show_home(void) {
 	CFG_setShowHome(CFG_DEFAULT_SHOWHOME);
 }
 
-/* Controller art */
-static int get_menu_controller_art(void) {
-	return CFG_getMenuControllerArt() ? 1 : 0;
+/* Controller art: what the List draws behind the Consoles tab */
+static const char* console_art_labels[] = {"Controller", "Background", "None"};
+static int console_art_values[] = {CONSOLE_ART_CONTROLLER, CONSOLE_ART_BACKGROUND, CONSOLE_ART_NONE};
+static int get_console_art(void) {
+	return CFG_getConsoleArt();
 }
-static void set_menu_controller_art(int v) {
-	CFG_setMenuControllerArt(v != 0);
+static void set_console_art(int v) {
+	CFG_setConsoleArt(v);
 }
-static void reset_menu_controller_art(void) {
-	CFG_setMenuControllerArt(CFG_DEFAULT_MENUCONTROLLERART);
+static void reset_console_art(void) {
+	CFG_setConsoleArt(CFG_DEFAULT_CONSOLEART);
 }
 
 /* Page title */
@@ -1816,7 +1818,9 @@ static void build_menu_tree(const DeviceInfo* dev) {
 	layouts_items[idx++].a_cycles = 1;
 	list_art_item = &layouts_items[idx];
 	layouts_items[idx] = (SettingItem)ITEM_CYCLE_INIT(
-		"List art", "The picture behind the List. Mix, 2D box art and Wheel come from Artwork Manager > Settings.",
+		"List art",
+		"The picture behind the List. Mix, 2D box art and Wheel come from Artwork Manager > Settings. None shows a "
+		"plain list with no picture or background.",
 		list_art_labels, GAME_LIST_ART_COUNT, list_art_values, get_list_art, set_list_art, reset_list_art);
 	layouts_items[idx++].a_cycles = 1;
 	backdrop_art_item = &layouts_items[idx];
@@ -1839,9 +1843,11 @@ static void build_menu_tree(const DeviceInfo* dev) {
 		"Tools tab", "Show the Tools tab.",
 		hide_show_labels, 2, on_off_values, get_show_tools, set_show_tools, reset_show_tools);
 	layouts_items[idx++] = (SettingItem)ITEM_CYCLE_INIT(
-		"Controller", "Show each console's controller behind it in the Consoles tab.",
-		hide_show_labels, 2, on_off_values, get_menu_controller_art, set_menu_controller_art, reset_menu_controller_art);
-	layouts_items[idx - 1].a_cycles = 1; // A flips it too, as LEFT and RIGHT
+		"Controller",
+		"What shows behind the Consoles tab in the List style: each console's controller, your own background "
+		"pictures (bg.png), or nothing.",
+		console_art_labels, CONSOLE_ART_COUNT, console_art_values, get_console_art, set_console_art, reset_console_art);
+	layouts_items[idx - 1].a_cycles = 1; // A cycles it too, as LEFT and RIGHT
 	layouts_items[idx++] = (SettingItem)ITEM_CYCLE_INIT(
 		"Page title", "The tabs and a game list's title. Hidden, L1/R1 still switch tabs.",
 		hide_show_labels, 2, on_off_values, get_page_title, set_page_title, reset_page_title);

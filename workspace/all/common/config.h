@@ -55,14 +55,24 @@ enum {
 };
 
 // The List game list's picture (Layouts > List art): the screenshot, 3D box art, or one of the scraper's
-// optional mix composite, 2D box art or wheel (Artwork Manager > Settings). Stored as gamelistart=; never
-// renumber (3D box art came later, so it is last; the settings row shows it after Mix).
+// optional mix composite, 2D box art or wheel (Artwork Manager > Settings); None, a plain list with no picture
+// and no background. Stored as gamelistart=; never renumber (3D box art and None came later, so they are last;
+// the settings row shows 3D box art after Mix).
 enum { GAME_LIST_ART_SCREENSHOT = 0,
 	   GAME_LIST_ART_MIX = 1,
 	   GAME_LIST_ART_BOXART2D = 2,
 	   GAME_LIST_ART_WHEEL = 3,
 	   GAME_LIST_ART_BOXART3D = 4,
+	   GAME_LIST_ART_NONE = 5,
 	   GAME_LIST_ART_COUNT };
+
+// What the List draws behind the Consoles tab (Layouts > Controller): Background = no controller, the user's own
+// .media/bg.png or the global bg.png; Controller = each console's controller (or logo); None = nothing, plain
+// black. Stored as menucontrollerart= (0/1 were the old Hide/Show); never renumber.
+enum { CONSOLE_ART_BACKGROUND = 0,
+	   CONSOLE_ART_CONTROLLER = 1,
+	   CONSOLE_ART_NONE = 2,
+	   CONSOLE_ART_COUNT };
 
 // The Backdrop game list's row item pictures (Layouts > Backdrop art): 3D box art, or the scraper's
 // optional 2D box art or wheel (Artwork Manager > Settings). Stored as backdropart=; never renumber.
@@ -147,8 +157,8 @@ typedef struct
 	bool showMenuTransitions;
 	bool showRecents;
 	bool showTools;
-	bool showHome; // the Home tab (Layouts > Home tab)
-	bool menuControllerArt;
+	bool showHome;	  // the Home tab (Layouts > Home tab)
+	int consoleArt;	  // CONSOLE_ART_*: what the List draws behind the Consoles tab (Layouts > Controller)
 	int gameListArt;  // GAME_LIST_ART_*: the List game list's picture (Layouts > List art)
 	int backdropArt;  // BACKDROP_ART_*: the Backdrop game list's item pictures (Layouts > Backdrop art)
 	bool buttonHints; // the launcher lists' bottom button hint bar (Layouts > Button hints)
@@ -266,7 +276,7 @@ typedef struct
 #define CFG_DEFAULT_WIFI_DIAG false
 #define CFG_DEFAULT_SHOWTOOLS true
 #define CFG_DEFAULT_SHOWHOME true
-#define CFG_DEFAULT_MENUCONTROLLERART true
+#define CFG_DEFAULT_CONSOLEART CONSOLE_ART_CONTROLLER
 #define CFG_DEFAULT_GAMELISTART GAME_LIST_ART_SCREENSHOT
 #define CFG_DEFAULT_BACKDROPART BACKDROP_ART_BOXART3D
 #define CFG_DEFAULT_BUTTONHINTS true
@@ -370,9 +380,12 @@ void CFG_setShowTools(bool show);
 // Show/hide the Home tab (Layouts > Home tab); it still shows when no other tab does.
 bool CFG_getShowHome(void);
 void CFG_setShowHome(bool show);
-// Show/hide each console's controller art in the Consoles tab (Layouts > Controller).
+// What the List draws behind the Consoles tab, CONSOLE_ART_* (Layouts > Controller); the setter stores an
+// out-of-range value as the default (Controller).
+int CFG_getConsoleArt(void);
+void CFG_setConsoleArt(int art);
+// Whether the Consoles tab shows each console's controller art (CFG_getConsoleArt() is Controller).
 bool CFG_getMenuControllerArt(void);
-void CFG_setMenuControllerArt(bool show);
 // The List game list's picture, GAME_LIST_ART_* (Layouts > List art); the setter stores an out-of-range
 // value as the default.
 int CFG_getGameListArt(void);

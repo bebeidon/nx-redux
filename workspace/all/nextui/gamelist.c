@@ -2302,14 +2302,19 @@ static void renderHints(SDL_Surface* screen, IndicatorType show_setting) {
 		UI_renderButtonHintBar(screen, right_pairs);
 }
 
-// A Grid, Carousel or Backdrop screen draws on plain black (or the Backdrop picture, on `screen`): no bg.png,
-// folder background or game art. Drops whatever is loaded, and forgets the resolve so a List screen reloads its
-// background when it comes back.
-static void clearArtForGrid(SDL_Surface* screen, int lastScreen) {
+// No background at all (no bg.png or folder background): drops whatever is loaded, and forgets the resolve so a
+// screen with a background reloads it when it comes back.
+static void clearBackground(void) {
 	folderBgPath[0] = '\0';
 	bgLastType = -1;
 	bgResolveValid = false;
 	onBackgroundLoaded(NULL); // a no-op while nothing is loaded
+}
+
+// A Grid, Carousel or Backdrop screen draws on plain black (or the Backdrop picture, on `screen`): no bg.png,
+// folder background or game art.
+static void clearArtForGrid(SDL_Surface* screen, int lastScreen) {
+	clearBackground();
 	had_thumb = false;
 	ox = screen->w;
 	if (!list_art_cleared || lastScreen != SCREEN_GAMELIST) {
@@ -2386,17 +2391,24 @@ void GameList_render(SDL_Surface* screen, int lastScreen,
 	int look = GameList_lookTab();
 	bool at_root = look >= 0;
 	MenuTabId tab = at_root ? (MenuTabId)look : MenuTabs_current();
+	// None (a game list's Layouts > List art, or the Consoles tab's Layouts > Controller): a plain list on black, no
+	// game art, controller or background picture
+	bool plain = at_root ? tab == MENU_TAB_CONSOLES && CFG_getConsoleArt() == CONSOLE_ART_NONE
+						 : CFG_getGameListArt() == GAME_LIST_ART_NONE;
 	// Home holds games; Consoles, Collections and Tools draw no game art (only a user's own
 	// .media background, below; plain lists for Collections and Tools)
-	bool game_art = !at_root || tab == MENU_TAB_HOME;
+	bool game_art = (!at_root || tab == MENU_TAB_HOME) && !plain;
 
 	// load folder background. Every main-menu tab shows the global bg.png (no
 	// entry): pinned shortcuts and tools would otherwise clear it or show a
 	// tool's own background. Game lists keep the per-entry background. The
 	// Consoles and Collections tabs show the selected row's own .media
 	// background instead when the card has one (tabBackground).
-	resolveAndLoadBackground(at_root ? NULL : entry, rompath, at_root ? tabBackground(tab, entry) : NULL,
-							 &list_show_entry_names);
+	if (plain)
+		clearBackground();
+	else
+		resolveAndLoadBackground(at_root ? NULL : entry, rompath, at_root ? tabBackground(tab, entry) : NULL,
+								 &list_show_entry_names);
 
 	// load game thumbnails
 	if (!game_art) {
@@ -2440,7 +2452,7 @@ void GameList_render(SDL_Surface* screen, int lastScreen,
 
 	// Consoles tab: the selected console's controller (Layouts > Controller), else its logo, dimmed, on the right
 	// behind the rows (the page background: it stays lit under the tab-focus dim, cropped only by the screen edges).
-	// Hidden, the right side stays empty for every console.
+	// Background or None, the right side stays empty for every console.
 	if (total > 0 && at_root && tab == MENU_TAB_CONSOLES && CFG_getMenuControllerArt()) {
 		const char* slash = strrchr(entry->path, '/');
 		const char* folder = slash ? slash + 1 : entry->path;

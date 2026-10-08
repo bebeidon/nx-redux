@@ -68,7 +68,7 @@ void CFG_defaults(NextUISettings* cfg) {
 		.showRecents = CFG_DEFAULT_SHOWRECENTS,
 		.showTools = CFG_DEFAULT_SHOWTOOLS,
 		.showHome = CFG_DEFAULT_SHOWHOME,
-		.menuControllerArt = CFG_DEFAULT_MENUCONTROLLERART,
+		.consoleArt = CFG_DEFAULT_CONSOLEART,
 		.gameListArt = CFG_DEFAULT_GAMELISTART,
 		.backdropArt = CFG_DEFAULT_BACKDROPART,
 		.buttonHints = CFG_DEFAULT_BUTTONHINTS,
@@ -199,7 +199,7 @@ void CFG_init(FontLoad_callback_t cb, ColorSet_callback_t ccb) {
 				continue;
 			}
 			if (sscanf(line, "menucontrollerart=%i", &temp_value) == 1) {
-				CFG_setMenuControllerArt((bool)temp_value);
+				CFG_setConsoleArt(temp_value);
 				continue;
 			}
 			if (sscanf(line, "gamelistart=%i", &temp_value) == 1) {
@@ -687,13 +687,18 @@ void CFG_setShowHome(bool show) {
 	CFG_sync();
 }
 
-bool CFG_getMenuControllerArt(void) {
-	return settings.menuControllerArt;
+int CFG_getConsoleArt(void) {
+	return settings.consoleArt;
 }
 
-void CFG_setMenuControllerArt(bool show) {
-	settings.menuControllerArt = show;
+void CFG_setConsoleArt(int art) {
+	// out of range → the default (Controller); 0/1 keep the old Hide/Show meaning
+	settings.consoleArt = (art < CONSOLE_ART_BACKGROUND || art >= CONSOLE_ART_COUNT) ? CFG_DEFAULT_CONSOLEART : art;
 	CFG_sync();
+}
+
+bool CFG_getMenuControllerArt(void) {
+	return settings.consoleArt == CONSOLE_ART_CONTROLLER;
 }
 
 int CFG_getGameListArt(void) {
@@ -1254,7 +1259,7 @@ void CFG_get(const char* key, char* value) {
 	} else if (strcmp(key, "showhome") == 0) {
 		sprintf(value, "%i", CFG_getShowHome());
 	} else if (strcmp(key, "menucontrollerart") == 0) {
-		sprintf(value, "%i", CFG_getMenuControllerArt());
+		sprintf(value, "%i", CFG_getConsoleArt());
 	} else if (strcmp(key, "gamelistart") == 0) {
 		sprintf(value, "%i", CFG_getGameListArt());
 	} else if (strcmp(key, "backdropart") == 0) {
@@ -1365,7 +1370,7 @@ static int CFG_serialize(char* buf, size_t cap) {
 	EMIT("recents=%i\n", settings.showRecents);
 	EMIT("tools=%i\n", settings.showTools);
 	EMIT("showhome=%i\n", settings.showHome);
-	EMIT("menucontrollerart=%i\n", settings.menuControllerArt);
+	EMIT("menucontrollerart=%i\n", settings.consoleArt);
 	EMIT("gamelistart=%i\n", settings.gameListArt);
 	EMIT("backdropart=%i\n", settings.backdropArt);
 	EMIT("buttonhints=%i\n", settings.buttonHints);
@@ -1612,7 +1617,7 @@ void CFG_print(void) {
 	printf("\t\"recents\": %i,\n", settings.showRecents);
 	printf("\t\"tools\": %i,\n", settings.showTools);
 	printf("\t\"showhome\": %i,\n", settings.showHome);
-	printf("\t\"menucontrollerart\": %i,\n", settings.menuControllerArt);
+	printf("\t\"menucontrollerart\": %i,\n", settings.consoleArt);
 	printf("\t\"gamelistart\": %i,\n", settings.gameListArt);
 	printf("\t\"backdropart\": %i,\n", settings.backdropArt);
 	printf("\t\"buttonhints\": %i,\n", settings.buttonHints);

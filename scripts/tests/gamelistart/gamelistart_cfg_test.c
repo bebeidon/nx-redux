@@ -3,7 +3,8 @@
 // settings file WITHOUT the keys must load the defaults (Screenshot and 3D box
 // art, so existing installs are unchanged), every value must parse,
 // out-of-range values must fall back to the default like the other game list
-// keys, and the setters must persist them.
+// keys, and the setters must persist them. Also the Consoles art key
+// (menucontrollerart=: Background / Controller / None).
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -62,8 +63,9 @@ int main(int argc, char** argv) {
 	write_settings(dir, "menuanim=1\nshowhome=1\n");
 	CFG_init(NULL, NULL);
 	CHECK(GAME_LIST_ART_SCREENSHOT == 0 && GAME_LIST_ART_MIX == 1 && GAME_LIST_ART_BOXART2D == 2 &&
-			  GAME_LIST_ART_WHEEL == 3 && GAME_LIST_ART_BOXART3D == 4 && GAME_LIST_ART_COUNT == 5,
-		  "List art: Screenshot 0, Mix 1, 2D box art 2, Wheel 3, 3D box art 4, count 5");
+			  GAME_LIST_ART_WHEEL == 3 && GAME_LIST_ART_BOXART3D == 4 && GAME_LIST_ART_NONE == 5 &&
+			  GAME_LIST_ART_COUNT == 6,
+		  "List art: Screenshot 0, Mix 1, 2D box art 2, Wheel 3, 3D box art 4, None 5, count 6");
 	CHECK(BACKDROP_ART_BOXART3D == 0 && BACKDROP_ART_BOXART2D == 1 && BACKDROP_ART_WHEEL == 2 &&
 			  BACKDROP_ART_COUNT == 3,
 		  "Backdrop art: 3D box art 0, 2D box art 1, Wheel 2, count 3");
@@ -89,9 +91,9 @@ int main(int argc, char** argv) {
 	}
 
 	// 3. Out-of-range values fall back to the defaults.
-	write_settings(dir, "gamelistart=5\nbackdropart=3\n");
+	write_settings(dir, "gamelistart=6\nbackdropart=3\n");
 	CFG_init(NULL, NULL);
-	CHECK(CFG_getGameListArt() == GAME_LIST_ART_SCREENSHOT, "gamelistart=5 loads as Screenshot");
+	CHECK(CFG_getGameListArt() == GAME_LIST_ART_SCREENSHOT, "gamelistart=6 loads as Screenshot");
 	CHECK(CFG_getBackdropArt() == BACKDROP_ART_BOXART3D, "backdropart=3 loads as 3D box art");
 	write_settings(dir, "gamelistart=-1\nbackdropart=-1\n");
 	CFG_init(NULL, NULL);
@@ -126,8 +128,12 @@ int main(int argc, char** argv) {
 	CHECK(CFG_getGameListArt() == GAME_LIST_ART_BOXART3D, "round-trip reload is 3D box art");
 
 	// 6. The setters guard their input too, and that persists.
-	CFG_setGameListArt(5);
-	CHECK(CFG_getGameListArt() == GAME_LIST_ART_SCREENSHOT, "setter stores 5 as Screenshot");
+	CFG_setGameListArt(GAME_LIST_ART_NONE);
+	CHECK(settings_contain(dir, "gamelistart=5\n"), "setter writes gamelistart=5 (None)");
+	CFG_init(NULL, NULL);
+	CHECK(CFG_getGameListArt() == GAME_LIST_ART_NONE, "round-trip reload is None");
+	CFG_setGameListArt(6);
+	CHECK(CFG_getGameListArt() == GAME_LIST_ART_SCREENSHOT, "setter stores 6 as Screenshot");
 	CHECK(settings_contain(dir, "gamelistart=0\n"), "setter writes gamelistart=0");
 	CFG_setBackdropArt(3);
 	CHECK(CFG_getBackdropArt() == BACKDROP_ART_BOXART3D, "setter stores 3 as 3D box art");
@@ -137,6 +143,45 @@ int main(int argc, char** argv) {
 	CFG_init(NULL, NULL);
 	CHECK(CFG_getGameListArt() == GAME_LIST_ART_SCREENSHOT, "round-trip reload is Screenshot");
 	CHECK(CFG_getBackdropArt() == BACKDROP_ART_BOXART3D, "round-trip reload is 3D box art");
+
+	// 7. Consoles art (menucontrollerart=): 0 Background, 1 Controller (default), 2 None; out of range ->
+	// Controller. CFG_getMenuControllerArt() is true only for Controller.
+	CHECK(CONSOLE_ART_BACKGROUND == 0 && CONSOLE_ART_CONTROLLER == 1 && CONSOLE_ART_NONE == 2 &&
+			  CONSOLE_ART_COUNT == 3,
+		  "Consoles art: Background 0, Controller 1, None 2, count 3");
+	write_settings(dir, "menuanim=1\n");
+	CFG_init(NULL, NULL);
+	CHECK(CFG_getConsoleArt() == CONSOLE_ART_CONTROLLER, "missing menucontrollerart loads as Controller");
+	for (int v = 0; v < CONSOLE_ART_COUNT; v++) {
+		snprintf(body, sizeof(body), "menucontrollerart=%i\n", v);
+		write_settings(dir, body);
+		CFG_init(NULL, NULL);
+		snprintf(msg, sizeof(msg), "menucontrollerart=%i loads as %i", v, v);
+		CHECK(CFG_getConsoleArt() == v, msg);
+		snprintf(msg, sizeof(msg), "menucontrollerart=%i: controller shown only for Controller", v);
+		CHECK(CFG_getMenuControllerArt() == (v == CONSOLE_ART_CONTROLLER), msg);
+		CFG_get("menucontrollerart", value);
+		snprintf(body, sizeof(body), "%i", v);
+		snprintf(msg, sizeof(msg), "CFG_get(\"menucontrollerart\") reports %i", v);
+		CHECK(strcmp(value, body) == 0, msg);
+	}
+	write_settings(dir, "menucontrollerart=3\n");
+	CFG_init(NULL, NULL);
+	CHECK(CFG_getConsoleArt() == CONSOLE_ART_CONTROLLER, "menucontrollerart=3 loads as Controller");
+	write_settings(dir, "menucontrollerart=-1\n");
+	CFG_init(NULL, NULL);
+	CHECK(CFG_getConsoleArt() == CONSOLE_ART_CONTROLLER, "menucontrollerart=-1 loads as Controller");
+	CFG_setConsoleArt(CONSOLE_ART_NONE);
+	CHECK(settings_contain(dir, "menucontrollerart=2\n"), "setter writes menucontrollerart=2");
+	CFG_init(NULL, NULL);
+	CHECK(CFG_getConsoleArt() == CONSOLE_ART_NONE, "round-trip reload is None");
+	CHECK(!CFG_getMenuControllerArt(), "None shows no controller");
+	CFG_setConsoleArt(CONSOLE_ART_BACKGROUND);
+	CFG_init(NULL, NULL);
+	CHECK(CFG_getConsoleArt() == CONSOLE_ART_BACKGROUND, "round-trip reload is Background");
+	CFG_setConsoleArt(7);
+	CHECK(CFG_getConsoleArt() == CONSOLE_ART_CONTROLLER, "setter stores 7 as Controller");
+	CHECK(settings_contain(dir, "menucontrollerart=1\n"), "setter writes menucontrollerart=1");
 
 	printf("%s\n", failures ? "FAILED" : "ALL PASSED");
 	return failures ? 1 : 0;
