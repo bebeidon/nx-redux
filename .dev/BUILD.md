@@ -17,12 +17,12 @@ toolchain images and produce flashable release archives.
 `make all` builds both device platforms (`PLATFORMS = tg5040 tg5050`) and
 packages one release zip **per device variant** into `releases/`:
 
-| Zip suffix | Platform | Overlays / bg | OSD |
+| Zip suffix | Platform | Overlays | OSD |
 |---|---|---|---|
-| `-brick` | tg5040 | 768p / 1024 | 1024x768 |
-| `-brickpro` | tg5040 | 768p / 1024 | 1024x768 |
-| `-smartpro` | tg5040 | 720p / 1280 | 1280x720 |
-| `-smartpros` | tg5050 | 720p / 1280 | 1280x720 |
+| `-brick` | tg5040 | 768p | 1024x768 |
+| `-brickpro` | tg5040 | 768p | 1024x768 |
+| `-smartpro` | tg5040 | 720p | 1280x720 |
+| `-smartpros` | tg5050 | 720p | 1280x720 |
 
 Host requirements for device builds: Docker and `adb`. On the first build for
 a platform, its toolchain repo is cloned into `toolchains/` and the Docker

@@ -7,7 +7,7 @@ Per-device hardware and platform facts. Build/deploy recipes live in
 
 One *platform* is one toolchain/kernel target; several *devices* can share it.
 The Makefile's authoritative list is the `DEVICES` variable
-(`device=platform,overlays,bg-width,osd-res`):
+(`device=platform,overlays,osd-res`):
 
 | Device | `DEVICE` | Platform | Panel | Kernel | SoC cores |
 |---|---|---|---|---|---|

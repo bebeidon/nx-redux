@@ -18,10 +18,9 @@ ifeq (,$(PLATFORMS))
 PLATFORMS = tg5040 tg5050
 endif
 
-# Device variants: device=platform,overlay_res,bg_res,osd_res
-# Each device produces a separate release zip. osd_res is spelled out rather
-# than derived from bg_res so the OSD layer a device gets is readable here.
-DEVICES = brick=tg5040,768p,1024,1024x768 brickpro=tg5040,768p,1024,1024x768 smartpro=tg5040,720p,1280,1280x720 smartpros=tg5050,720p,1280,1280x720
+# Device variants: device=platform,overlay_res,osd_res
+# Each device produces a separate release zip.
+DEVICES = brick=tg5040,768p,1024x768 brickpro=tg5040,768p,1024x768 smartpro=tg5040,720p,1280x720 smartpros=tg5050,720p,1280x720
 
 # Pinned upstream commits — update these when upgrading to a new version
 DRASTIC_REPO=https://github.com/trngaje/advanced_drastic
@@ -492,16 +491,15 @@ package: tidy
 	-mv $(VENDOR_DEST)/* ./build/BASE/ 2>/dev/null; true
 
 	# --- Per-device packaging ---
-	# DEVICES format: device=platform,overlay_res,bg_res,osd_res
+	# DEVICES format: device=platform,overlay_res,osd_res
 	@for dev_entry in $(DEVICES); do \
 		dev=$$(echo $$dev_entry | cut -d= -f1); \
 		dev_config=$$(echo $$dev_entry | cut -d= -f2); \
 		plat=$$(echo $$dev_config | cut -d, -f1); \
 		overlay_res=$$(echo $$dev_config | cut -d, -f2); \
-		bg_res=$$(echo $$dev_config | cut -d, -f3); \
-		osd_res=$$(echo $$dev_config | cut -d, -f4); \
+		osd_res=$$(echo $$dev_config | cut -d, -f3); \
 		\
-		echo "# ===== Packaging $$dev (platform=$$plat, overlays=$$overlay_res, bg=$$bg_res, osd=$$osd_res) ====="; \
+		echo "# ===== Packaging $$dev (platform=$$plat, overlays=$$overlay_res, osd=$$osd_res) ====="; \
 		rm -rf ./build/PAYLOAD-$$dev; \
 		mkdir -p ./build/PAYLOAD-$$dev/.system; \
 		\
@@ -534,15 +532,11 @@ package: tidy
 		mkdir -p ./build/PAYLOAD-$$dev/Emus; \
 		cp -R ./build/BASE/Emus/shared ./build/PAYLOAD-$$dev/Emus/shared; \
 		\
-		echo "  assembling Tools/.media ($$bg_res)"; \
-		mkdir -p ./build/PAYLOAD-$$dev/Tools/.media; \
-		cp ./build/BASE/Tools/.media/bg-$$bg_res.png ./build/PAYLOAD-$$dev/Tools/.media/bg.png; \
-		\
 		echo "  creating device marker $$plat-$$dev"; \
 		touch ./build/PAYLOAD-$$dev/$$plat-$$dev; \
 		\
 		echo "  creating MinUI.zip"; \
-		cd ./build/PAYLOAD-$$dev && zip -r MinUI.zip .system .tmp_update Emus Tools $$plat-$$dev && cd ../..; \
+		cd ./build/PAYLOAD-$$dev && zip -r MinUI.zip .system .tmp_update Emus $$plat-$$dev && cd ../..; \
 		cp ./build/PAYLOAD-$$dev/MinUI.zip ./build/BASE/MinUI-$$dev.zip; \
 		\
 		echo "  resolving overlays for $$dev ($$overlay_res)"; \
@@ -556,19 +550,11 @@ package: tidy
 			fi; \
 		done; \
 		\
-		echo "  resolving bg images for $$dev ($$bg_res)"; \
-		find ./build/BASE/Collections ./build/BASE/Favorites \
-			"./build/BASE/Recently Played" ./build/BASE/Roms \
-			-path '*/.media/bg-'"$$bg_res"'.png' 2>/dev/null \
-		| while read f; do \
-			cp "$$f" "$$(dirname "$$f")/bg.png"; \
-		done; \
-		\
 		echo "  creating release zip"; \
 		cd ./build/BASE && zip -r ../../releases/$(RELEASE_NAME)-$$dev.zip \
 			Bios Cheats Collections Emus Favorites Music Overlays \
 			"Recently Played" Roms Saves Shaders Tools trimui Videos *.pakz README.txt \
-			-x '*/bg-*.png' -x '*/720p/*' -x '*/768p/*' -x 'Emus/shared/*' \
+			-x '*/720p/*' -x '*/768p/*' -x 'Emus/shared/*' \
 			&& cd ../..; \
 		cd ./build/PAYLOAD-$$dev && zip -r ../../releases/$(RELEASE_NAME)-$$dev.zip MinUI.zip && cd ../..; \
 		if [ -d ./build/PAKZ/$$plat ]; then \
@@ -576,9 +562,6 @@ package: tidy
 		fi; \
 		\
 		echo "  cleaning up generated files"; \
-		find ./build/BASE/Collections ./build/BASE/Favorites \
-			"./build/BASE/Recently Played" ./build/BASE/Roms \
-			-name "bg.png" -path '*/.media/*' -delete 2>/dev/null; \
 		for overlay_root in ./build/BASE/Overlays; do \
 			if [ -d "$$overlay_root" ]; then \
 				find "$$overlay_root" -mindepth 1 -maxdepth 1 -type d | while read emu_dir; do \
