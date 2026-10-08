@@ -951,7 +951,7 @@ static void renderSettings(void) {
 		{.label = "3D box art", .value = "Always", .swatch = -1, .cycleable = 0, .desc = "Always downloaded"},
 		{.label = "2D box art", .value = scraper_prefs.box2d ? "On" : "Off", .swatch = -1, .cycleable = 1, .desc = "Also download the flat 2D box art"},
 		{.label = "Wheel", .value = ScraperPrefs_wantWheel(&scraper_prefs) ? "On" : "Off", .swatch = -1, .cycleable = !scraper_prefs.mix, .desc = scraper_prefs.mix ? "Needed by Generate mix" : "Also download the game's logo (wheel)"},
-		{.label = "Generate mix", .value = scraper_prefs.mix ? "On" : "Off", .swatch = -1, .cycleable = 1, .desc = "Build a screenshot + box art + wheel picture on the device for the List and Backdrop layouts. Scraping takes longer and uses more storage"},
+		{.label = "Generate mix", .value = scraper_prefs.mix ? "On" : "Off", .swatch = -1, .cycleable = 1, .desc = "Build a screenshot + box art + wheel picture on the device for the List layout. Scraping takes longer and uses more storage"},
 	};
 	UISettingsItem reset_item = {.label = "Reset artwork", .value = NULL, .swatch = -1, .cycleable = 0, .desc = "Delete every image the scraper downloaded (your own .media pictures are kept)"};
 	UISettingsItem user_item = {.label = "Username", .value = user_display, .swatch = -1, .cycleable = 0, .desc = "ScreenScraper username"};
