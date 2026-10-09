@@ -1413,7 +1413,6 @@ void Menu_undoLoadState(void) {
 void Menu_loop(void) {
 	RA_onMenuOpen();
 	// the slot previews below are read back from disk
-	Menu_waitScreenshotSave();
 	menu.bitmap = Menu_captureScreenSurface(SDL_PIXELFORMAT_ARGB8888);
 	SDL_Surface* backing = SDL_CreateRGBSurfaceWithFormat(0, DEVICE_WIDTH, DEVICE_HEIGHT, 32, SDL_PIXELFORMAT_ARGB8888);
 

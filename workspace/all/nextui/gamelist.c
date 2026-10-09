@@ -1441,10 +1441,10 @@ void GameList_render(SDL_Surface* screen, int lastScreen,
 				right_pairs[p++] = "B";
 				right_pairs[p++] = "BACK";
 			}
-			if (netplay_hint) {
-				right_pairs[p++] = "Y";
-				right_pairs[p++] = "NETPLAY";
-			}
+	//		if (netplay_hint) {
+	//			right_pairs[p++] = "Y";
+	//			right_pairs[p++] = "NETPLAY";
+	//		}
 			if (resume.can_resume) {
 				right_pairs[p++] = "X";
 				right_pairs[p++] = "RESUME";
