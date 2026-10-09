@@ -1068,7 +1068,7 @@ static Array* getRoot(int simple_mode) {
 	Array* root = Array_new();
 
 	if (Recents_load() && CFG_getShowRecents())
-		Array_push(root, Entry_new(FAUX_RECENT_PATH, ENTRY_DIR));
+		Array_push(root, Entry_newNamed(FAUX_RECENT_PATH, ENTRY_DIR, "Last Played"));
 
 	Array* entries = getRoms();
 
