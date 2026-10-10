@@ -376,11 +376,15 @@ int main(int argc, char* argv[]) {
 			else if (currentScreen == SCREEN_SEARCH)
 				menu_title = "Search";
 			else if (stack->count > 1) {
-				char* dir_title = top->name;
-				trimSortingMeta(&dir_title);
-				menu_title = dir_title;
+        			if (exactMatch(top->path, FAUX_RECENT_PATH)) {
+	                		menu_title = "Last Played";
+        			} else {
+                			char* dir_title = top->name;
+                			trimSortingMeta(&dir_title);
+                			menu_title = dir_title;
+        			}
 			} else
-				menu_title = "NX Redux";
+				menu_title = "BRICK HAMMER";
 			int ow = UI_renderMenuBar(screen, menu_title);
 
 			// capture menu bar for fixed overlay during animation
