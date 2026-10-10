@@ -4399,21 +4399,21 @@ void LEDS_initLeds() {
 
 		// LIGHT_PROFILE_LOW_BATTERY
 		lightsLowBattery[i] = lightsDefault[i];
-		lightsLowBattery[i].effect = 3; // blink
-		lightsLowBattery[i].color1 = 0xFF3300;
-		lightsLowBattery[i].cycles = -1; // infinite
+	//	lightsLowBattery[i].effect = 1; // static
+	//	lightsLowBattery[i].color1 = 0xFF3300;
+	//	lightsLowBattery[i].cycles = -1; // infinite
 
 		// LIGHT_PROFILE_CRITICAL_BATTERY
 		lightsCriticalBattery[i] = lightsDefault[i];
-		lightsCriticalBattery[i].effect = 3; // blink
+		lightsCriticalBattery[i].effect = 1; // static
 		lightsCriticalBattery[i].color1 = 0xFF0000;
 		lightsCriticalBattery[i].cycles = -1; // infinite
 
 		// LIGHT_PROFILE_CHARGING
 		lightsCharging[i] = lightsDefault[i];
-		lightsCharging[i].effect = 2; // breathe
-		lightsCharging[i].color1 = 0x00FF00;
-		lightsCharging[i].cycles = -1; // infinite
+	//	lightsCharging[i].effect = 2; // breathe
+	//	lightsCharging[i].color1 = 0x8000FF;
+	//	lightsCharging[i].cycles = -1; // infinite
 
 		// LIGHT_PROFILE_SLEEP
 		lightsSleep[i] = lightsDefault[i];
