@@ -4411,6 +4411,8 @@ void LEDS_initLeds() {
 
 		// LIGHT_PROFILE_CHARGING
 		lightsCharging[i] = lightsDefault[i];
+		lightsCharging[i].brightness = 0;
+		lightsCharging[i].inbrightness = 0;
 	//	lightsCharging[i].effect = 2; // breathe
 	//	lightsCharging[i].color1 = 0x8000FF;
 	//	lightsCharging[i].cycles = -1; // infinite
