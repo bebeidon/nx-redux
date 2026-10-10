@@ -14,7 +14,7 @@ enum {
 };
 
 // Background loading callback
-typedef void (*BackgroundLoadedCallback)(SDL_Surface* surface);
+typedef void (*BackgroundLoadedCallback)(SDL_Surface* surface, const char* imagePath);
 
 // Screen surface (owned by nextui.c)
 extern SDL_Surface* screen;
@@ -41,7 +41,8 @@ void cleanupImageLoaderPool(void);
 
 // Background loading
 void startLoadFolderBackground(const char* imagePath, BackgroundLoadedCallback callback);
-void onBackgroundLoaded(SDL_Surface* surface);
+void onBackgroundLoaded(SDL_Surface* surface, const char* imagePath);
+void clearFolderBackground(void);
 
 // Thumbnail loading
 bool startLoadThumb(const char* thumbpath);

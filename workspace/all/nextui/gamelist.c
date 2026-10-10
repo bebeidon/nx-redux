@@ -175,7 +175,7 @@ static void resolveAndLoadBackground(Entry* entry, const char* rompath,
 	if (bgPath[0] && exists(bgPath))
 		startLoadFolderBackground(bgPath, onBackgroundLoaded);
 	else {
-		onBackgroundLoaded(NULL);
+		onBackgroundLoaded(NULL, NULL);
 		*list_show_entry_names = true;
 	}
 }

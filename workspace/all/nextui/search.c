@@ -155,7 +155,7 @@ SearchResult Search_handleInput(unsigned long now) {
 
 void Search_render(SDL_Surface* screen, int lastScreen) {
 	if (lastScreen != SCREEN_SEARCH) {
-		onBackgroundLoaded(NULL);
+		clearFolderBackground();
 		GFX_clearLayers(LAYER_THUMBNAIL);
 		// we just cleared the shared folder background; make the game list
 		// reload it on return instead of trusting its stale change-detection
